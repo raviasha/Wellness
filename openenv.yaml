@@ -1,0 +1,21 @@
+tasks:
+  - name: single_goal
+    description: "Easy: Optimize performance biomarkers for an athletic_performance persona over 14 days"
+    difficulty: easy
+  - name: multi_outcome
+    description: "Medium: Balance all 8 biomarkers for a stress_management persona over 30 days"
+    difficulty: medium
+  - name: resistant_adaptation
+    description: "Hard: Improve outcomes for a low-compliance weight_loss persona over 30 days"
+    difficulty: hard
+
+environment:
+  name: wellness-outcome
+  description: >
+    Outcome-based wellness simulator where rewards are driven by measured
+    biomarker changes (resting HR, HRV, VO2 max, body fat %, lean mass,
+    sleep efficiency, cortisol proxy, energy level) weighted by the user's
+    health goal. Each persona has hidden physiological response parameters
+    the agent must learn through experience.
+
+entrypoint: python inference.py

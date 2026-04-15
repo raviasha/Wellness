@@ -1,0 +1,5 @@
+"""Helper to load .env before running inference."""
+from dotenv import load_dotenv
+load_dotenv()
+import inference
+inference.main()

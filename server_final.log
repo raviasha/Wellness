@@ -1,0 +1,70 @@
+/Users/rampetaravishankar/Desktop/Wellness-Outcome/app.py:120: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+INFO:     Started server process [39888]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:7860 (Press CTRL+C to quit)
+mobile+cffi returned 429: Mobile login returned 429 — IP rate limited by Garmin
+mobile+requests returned 429: Mobile login returned 429 — IP rate limited by Garmin
+[Startup] Auto-sync scheduler started (every 12 hours)
+INFO:     171.76.83.150:0 - "GET / HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0p2yq-hl7_y3..js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/turbopack-0zkgnpqc4hxpj.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/media/caa3a2e1cccd8315-s.p.16t1db8_9y2o~.woff2 HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/11kjahy2ntf0n.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0o~269zocnb95.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0a1q49c~mt190.css HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0s2cckt7.zbg2.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0mstyq17cbf8-.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/media/797e433ab948586e-s.p.0.q-h669a_dqa.woff2 HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/history HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/dashboard/metrics HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/persona/evals HTTP/1.1" 200 OK
+[Auto-Sync] Synced Garmin for user 3 (Tejas)
+[Persist] ✅ wellness.db
+INFO:     171.76.83.150:0 - "GET /api/recommendations?goal=overall_wellness&mode=auto HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/admin/data HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/admin/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [39888]
+/Users/rampetaravishankar/Desktop/Wellness-Outcome/app.py:120: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+INFO:     Started server process [40248]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:7860 (Press CTRL+C to quit)
+mobile+cffi returned 429: Mobile login returned 429 — IP rate limited by Garmin
+mobile+requests returned 429: Mobile login returned 429 — IP rate limited by Garmin
+[Startup] Auto-sync scheduler started (every 12 hours)
+INFO:     171.76.83.150:0 - "GET / HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0s0gwegt.7lw3.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/media/797e433ab948586e-s.p.0.q-h669a_dqa.woff2 HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0a1q49c~mt190.css HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/media/caa3a2e1cccd8315-s.p.16t1db8_9y2o~.woff2 HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0o~269zocnb95.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0mstyq17cbf8-.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/turbopack-0zkgnpqc4hxpj.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/0s2cckt7.zbg2.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /_next/static/chunks/11kjahy2ntf0n.js HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/history HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/dashboard/metrics HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/persona/evals HTTP/1.1" 200 OK
+INFO:     171.76.83.150:0 - "GET /api/recommendations?goal=overall_wellness&mode=auto HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [40248]
