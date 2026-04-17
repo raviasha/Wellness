@@ -14,3 +14,4 @@ models/user_*/
 .DS_Store
 models/*.pt
 demo_output/
+.garmin_tokens/

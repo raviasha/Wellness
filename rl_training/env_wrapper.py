@@ -10,11 +10,29 @@ from wellness_env.personas import ResponseModel
 class WellnessGymEnv(gym.Env):
     """Gymnasium wrapper for WellnessEnv allowing integration with tools like Stable Baselines 3."""
     
-    def __init__(self, seed: int = 42, task_name: str = "single_goal", persona_path: str = None):
+    def __init__(
+        self,
+        seed: int = 42,
+        task_name: str = "single_goal",
+        persona_path: str = None,
+        distribution_path: str = None,
+    ):
         super().__init__()
-        self.env = WellnessEnv(seed=seed)
         self.task_name = task_name
         self.persona_path = persona_path
+        self.distribution_path = distribution_path
+
+        # Load distribution if provided
+        distribution = None
+        if distribution_path and os.path.exists(distribution_path):
+            from backend.distribution_calibration import load_distribution
+            distribution = load_distribution(distribution_path)
+
+        self.env = WellnessEnv(
+            seed=seed,
+            simulator_mode="distribution" if distribution is not None else "rules",
+            distribution=distribution,
+        )
         
         # Action space: Sleep(5) x Exercise(6) x Nutrition(5) = 150 unique discrete actions
         self.sleep_options = list(SleepDuration)

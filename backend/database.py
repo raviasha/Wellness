@@ -46,10 +46,12 @@ class User(Base):
     username = Column(String, unique=True)
     garmin_email = Column(String)
     garmin_password_enc = Column(String)
+    terra_user_id = Column(String)
+    wearable_source = Column(String, default="garmin")
     created_at = Column(DateTime, default=datetime.utcnow)
     
     profile = relationship("UserProfile", back_populates="user", uselist=False)
-    syncs = relationship("GarminSync", back_populates="user")
+    syncs = relationship("WearableSync", back_populates="user")
     logs = relationship("ManualLog", back_populates="user")
     recommendations = relationship("Recommendation", back_populates="user")
 
@@ -65,12 +67,27 @@ class Recommendation(Base):
     # Predictions
     expected_hrv_delta = Column(Float)
     expected_rhr_delta = Column(Float)
+    expected_sleep_delta = Column(Float)
+    expected_stress_delta = Column(Float)
+    expected_weight_delta = Column(Float)
+    expected_energy_delta = Column(Float)
     
     # Actuals (Filled after next sync)
     actual_hrv_delta = Column(Float)
     actual_rhr_delta = Column(Float)
+    actual_sleep_delta = Column(Float)
+    actual_stress_delta = Column(Float)
+    actual_weight_delta = Column(Float)
     compliance_score = Column(Float) # 0.0 to 1.0
     fidelity_score = Column(Float) # 0.0 to 1.0
+    
+    # Per-input compliance breakdown
+    compliance_sleep = Column(Float)
+    compliance_exercise = Column(Float)
+    compliance_nutrition = Column(Float)
+    
+    # LLM-generated long-term impact text
+    long_term_impact = Column(Text)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -92,26 +109,46 @@ class UserProfile(Base):
     
     user = relationship("User", back_populates="profile")
 
-class GarminSync(Base):
-    __tablename__ = "garmin_syncs"
+# Legacy alias for migration compatibility
+GarminSync = None  # replaced by WearableSync — downstream imports will be updated
+
+class WearableSync(Base):
+    __tablename__ = "wearable_syncs"
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     sync_date = Column(String)
-    hrv_avg = Column(Integer)
-    resting_hr = Column(Integer)
-    body_battery = Column(Integer)
-    intensity_minutes = Column(Integer, default=0)
-    active_calories = Column(Integer, default=0)
-    training_load = Column(Float, default=0)
-    sleep_score = Column(Integer)
-    stress_avg = Column(Integer)
-    steps_total = Column(Integer)
-    spo2_avg = Column(Float)
-    respiration_avg = Column(Float)
+    source = Column(String, default="garmin")  # garmin, apple_health, oneplus, fitbit, etc.
+    
+    # Core biometrics (renamed to device-agnostic names)
+    hrv_rmssd = Column(Integer)          # was hrv_avg — ms RMSSD
+    resting_hr = Column(Integer)         # bpm (unchanged)
+    recovery_score = Column(Integer)     # was body_battery — 0-100
+    active_minutes = Column(Integer, default=0)   # was intensity_minutes
+    active_calories = Column(Integer, default=0)   # kcal (unchanged)
+    strain_score = Column(Float, default=0)        # was training_load
+    sleep_score = Column(Integer)        # 0-100 (unchanged)
+    stress_avg = Column(Integer)         # 0-100 (unchanged)
+    steps = Column(Integer)              # was steps_total
+    spo2 = Column(Float)                 # was spo2_avg — %
+    respiration_rate = Column(Float)     # was respiration_avg — breaths/min
+    
+    # New columns — Terra-provided, not available from legacy Garmin scraping
+    vo2_max = Column(Float)              # ml/kg/min
+    sleep_deep_pct = Column(Float)       # % deep sleep
+    sleep_rem_pct = Column(Float)        # % REM sleep
+    sleep_light_pct = Column(Float)      # % light sleep
+    sleep_duration_hours = Column(Float) # total hours
+    skin_temp_delta = Column(Float)      # °C deviation from baseline
+    avg_hr = Column(Integer)             # average heart rate bpm
+    hr_max = Column(Integer)             # max HR during day bpm
+    calories_total = Column(Integer)     # total calories (BMR + active)
+    distance_meters = Column(Float)      # total distance
+    floors_climbed = Column(Integer)     # count
+    
     raw_payload = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    __table_args__ = (UniqueConstraint('user_id', 'sync_date', name='_user_sync_uc'),)
+    __table_args__ = (UniqueConstraint('user_id', 'sync_date', name='_user_wearable_sync_uc'),)
     user = relationship("User", back_populates="syncs")
 
 class ManualLog(Base):
@@ -149,17 +186,36 @@ def init_db():
                 conn.execute(text("ALTER TABLE user_profile ADD COLUMN last_calibration_at TIMESTAMP"))
                 print("[Migration] Added last_calibration_at to user_profile")
 
-    # Migration 1.5: Add extended Garmin biometrics
-    if "garmin_syncs" in inspector.get_table_names():
-        sync_cols = {c["name"] for c in inspector.get_columns("garmin_syncs")}
+    # Migration 1.5: Migrate garmin_syncs → wearable_syncs (if old table exists)
+    if "garmin_syncs" in inspector.get_table_names() and "wearable_syncs" not in inspector.get_table_names():
+        # Create new table first
+        WearableSync.__table__.create(bind=engine, checkfirst=True)
         with engine.begin() as conn:
-            if "sleep_score" not in sync_cols:
-                conn.execute(text("ALTER TABLE garmin_syncs ADD COLUMN sleep_score INTEGER"))
-                conn.execute(text("ALTER TABLE garmin_syncs ADD COLUMN stress_avg INTEGER"))
-                conn.execute(text("ALTER TABLE garmin_syncs ADD COLUMN steps_total INTEGER"))
-                conn.execute(text("ALTER TABLE garmin_syncs ADD COLUMN spo2_avg FLOAT"))
-                conn.execute(text("ALTER TABLE garmin_syncs ADD COLUMN respiration_avg FLOAT"))
-                print("[Migration] Added 5 custom biometric columns to garmin_syncs")
+            # Copy existing data with column renames
+            conn.execute(text("""
+                INSERT INTO wearable_syncs (
+                    user_id, sync_date, source, hrv_rmssd, resting_hr, recovery_score,
+                    active_minutes, active_calories, strain_score, sleep_score, stress_avg,
+                    steps, spo2, respiration_rate, raw_payload, created_at
+                )
+                SELECT 
+                    user_id, sync_date, 'garmin', hrv_avg, resting_hr, body_battery,
+                    intensity_minutes, active_calories, training_load, sleep_score, stress_avg,
+                    steps_total, spo2_avg, respiration_avg, raw_payload, created_at
+                FROM garmin_syncs
+            """))
+            print("[Migration] Copied garmin_syncs → wearable_syncs with column renames")
+
+    # Migration 1.6: Add terra fields to users table
+    if "users" in inspector.get_table_names():
+        user_cols = {c["name"] for c in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "terra_user_id" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN terra_user_id VARCHAR"))
+                print("[Migration] Added terra_user_id to users")
+            if "wearable_source" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN wearable_source VARCHAR DEFAULT 'garmin'"))
+                print("[Migration] Added wearable_source to users")
 
     # Migration 3: Add log_time to manual_logs
     if 'log_time' not in [col['name'] for col in inspector.get_columns('manual_logs')]:
@@ -172,6 +228,28 @@ def init_db():
     if "recommendations" not in inspector.get_table_names():
         Recommendation.__table__.create(bind=engine, checkfirst=True)
         print("[Migration] Created recommendations table")
+
+    # Migration 4: Add expanded delta, per-input compliance, and long-term impact columns to recommendations
+    if "recommendations" in inspector.get_table_names():
+        rec_cols = {c["name"] for c in inspector.get_columns("recommendations")}
+        new_rec_cols = {
+            "expected_sleep_delta": "FLOAT",
+            "expected_stress_delta": "FLOAT",
+            "expected_weight_delta": "FLOAT",
+            "expected_energy_delta": "FLOAT",
+            "actual_sleep_delta": "FLOAT",
+            "actual_stress_delta": "FLOAT",
+            "actual_weight_delta": "FLOAT",
+            "compliance_sleep": "FLOAT",
+            "compliance_exercise": "FLOAT",
+            "compliance_nutrition": "FLOAT",
+            "long_term_impact": "TEXT",
+        }
+        with engine.begin() as conn:
+            for col_name, col_type in new_rec_cols.items():
+                if col_name not in rec_cols:
+                    conn.execute(text(f"ALTER TABLE recommendations ADD COLUMN {col_name} {col_type}"))
+                    print(f"[Migration] Added {col_name} to recommendations")
     
     db = SessionLocal()
     try:
@@ -200,11 +278,29 @@ def get_users():
     db = SessionLocal()
     try:
         users = db.query(User).all()
-        return [{"id": u.id, "username": u.username} for u in users]
+        result = []
+        for u in users:
+            # Most recent wearable sync row for this user
+            last_sync = (
+                db.query(WearableSync)
+                .filter(WearableSync.user_id == u.id)
+                .order_by(WearableSync.created_at.desc())
+                .first()
+            )
+            last_synced_at = last_sync.created_at.isoformat() if last_sync and last_sync.created_at else None
+            last_sync_date = last_sync.sync_date if last_sync else None
+            result.append({
+                "id": u.id,
+                "username": u.username,
+                "wearable_source": u.wearable_source or "garmin",
+                "last_synced_at": last_synced_at,
+                "last_sync_date": last_sync_date,
+            })
+        return result
     finally:
         db.close()
 
-def create_user(username, name=None, garmin_email=None, garmin_password=None):
+def create_user(username, name=None, garmin_email=None, garmin_password=None, wearable_source="garmin"):
     """Create a new user + profile. Returns the new user dict."""
     db = SessionLocal()
     try:
@@ -215,7 +311,8 @@ def create_user(username, name=None, garmin_email=None, garmin_password=None):
         new_user = User(
             username=username,
             garmin_email=garmin_email or "",
-            garmin_password_enc=encrypt_val(garmin_password) if garmin_password else None
+            garmin_password_enc=encrypt_val(garmin_password) if garmin_password else None,
+            wearable_source=wearable_source
         )
         db.add(new_user)
         db.flush()
@@ -232,6 +329,19 @@ def create_user(username, name=None, garmin_email=None, garmin_password=None):
     finally:
         db.close()
 
+def set_user_device(user_id, wearable_source):
+    """Update the user's wearable device type."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.wearable_source = wearable_source
+            db.commit()
+            return True
+        return False
+    finally:
+        db.close()
+
 def update_garmin_creds(user_id, email, password):
     db = SessionLocal()
     try:
@@ -239,6 +349,7 @@ def update_garmin_creds(user_id, email, password):
         if user:
             user.garmin_email = email
             user.garmin_password_enc = encrypt_val(password)
+            user.wearable_source = "garmin"
             db.commit()
     finally:
         db.close()
@@ -253,35 +364,80 @@ def get_garmin_creds(user_id):
     finally:
         db.close()
 
-def save_garmin_sync(user_id, sync_date, hrv_avg, resting_hr, body_battery, 
-                     intensity_minutes, active_calories, training_load, raw_payload,
-                     sleep_score=None, stress_avg=None, steps_total=None,
-                     spo2_avg=None, respiration_avg=None):
+def update_terra_creds(user_id, terra_user_id, wearable_source):
     db = SessionLocal()
     try:
-        existing = db.query(GarminSync).filter(
-            GarminSync.user_id == user_id, 
-            GarminSync.sync_date == sync_date
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.terra_user_id = terra_user_id
+            user.wearable_source = wearable_source
+            db.commit()
+    finally:
+        db.close()
+
+def get_wearable_creds(user_id):
+    """Returns (terra_user_id, wearable_source) for Terra users,
+    or (garmin_email, garmin_password) for legacy Garmin users."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None, None, None
+        if user.terra_user_id:
+            return "terra", user.terra_user_id, user.wearable_source
+        if user.garmin_email:
+            return "garmin", user.garmin_email, decrypt_val(user.garmin_password_enc)
+        return None, None, None
+    finally:
+        db.close()
+
+def save_wearable_sync(user_id, sync_date, source, raw_payload,
+                      hrv_rmssd=None, resting_hr=None, recovery_score=None,
+                      active_minutes=None, active_calories=None, strain_score=None,
+                      sleep_score=None, stress_avg=None, steps=None,
+                      spo2=None, respiration_rate=None,
+                      vo2_max=None, sleep_deep_pct=None, sleep_rem_pct=None,
+                      sleep_light_pct=None, sleep_duration_hours=None,
+                      skin_temp_delta=None, avg_hr=None, hr_max=None,
+                      calories_total=None, distance_meters=None, floors_climbed=None):
+    db = SessionLocal()
+    try:
+        existing = db.query(WearableSync).filter(
+            WearableSync.user_id == user_id, 
+            WearableSync.sync_date == sync_date
         ).first()
         
         if existing:
             # Smart Merge: Only update if the incoming value is non-zero, 
             # or if the existing value is currently null/zero. 
-            # This protects high-fidelity data from being overwritten by 429 partials.
+            # This protects high-fidelity data from being overwritten by partial syncs.
             def _merge(old, new):
                 return new if (new is not None and new != 0) else old
 
-            existing.hrv_avg = _merge(existing.hrv_avg, hrv_avg)
+            existing.source = source or existing.source
+            existing.hrv_rmssd = _merge(existing.hrv_rmssd, hrv_rmssd)
             existing.resting_hr = _merge(existing.resting_hr, resting_hr)
-            existing.body_battery = _merge(existing.body_battery, body_battery)
-            existing.intensity_minutes = _merge(existing.intensity_minutes, intensity_minutes)
+            existing.recovery_score = _merge(existing.recovery_score, recovery_score)
+            existing.active_minutes = _merge(existing.active_minutes, active_minutes)
             existing.active_calories = _merge(existing.active_calories, active_calories)
-            existing.training_load = _merge(existing.training_load, training_load)
+            existing.strain_score = _merge(existing.strain_score, strain_score)
             existing.sleep_score = _merge(existing.sleep_score, sleep_score)
             existing.stress_avg = _merge(existing.stress_avg, stress_avg)
-            existing.steps_total = _merge(existing.steps_total, steps_total)
-            existing.spo2_avg = _merge(existing.spo2_avg, spo2_avg)
-            existing.respiration_avg = _merge(existing.respiration_avg, respiration_avg)
+            existing.steps = _merge(existing.steps, steps)
+            existing.spo2 = _merge(existing.spo2, spo2)
+            existing.respiration_rate = _merge(existing.respiration_rate, respiration_rate)
+            # New extended fields
+            existing.vo2_max = _merge(existing.vo2_max, vo2_max)
+            existing.sleep_deep_pct = _merge(existing.sleep_deep_pct, sleep_deep_pct)
+            existing.sleep_rem_pct = _merge(existing.sleep_rem_pct, sleep_rem_pct)
+            existing.sleep_light_pct = _merge(existing.sleep_light_pct, sleep_light_pct)
+            existing.sleep_duration_hours = _merge(existing.sleep_duration_hours, sleep_duration_hours)
+            existing.skin_temp_delta = _merge(existing.skin_temp_delta, skin_temp_delta)
+            existing.avg_hr = _merge(existing.avg_hr, avg_hr)
+            existing.hr_max = _merge(existing.hr_max, hr_max)
+            existing.calories_total = _merge(existing.calories_total, calories_total)
+            existing.distance_meters = _merge(existing.distance_meters, distance_meters)
+            existing.floors_climbed = _merge(existing.floors_climbed, floors_climbed)
             
             # Always update raw_payload to reflect latest attempt, but keep it composite
             try:
@@ -292,12 +448,17 @@ def save_garmin_sync(user_id, sync_date, hrv_avg, resting_hr, body_battery,
             except:
                 existing.raw_payload = json.dumps(raw_payload)
         else:
-            new_sync = GarminSync(
-                user_id=user_id, sync_date=sync_date, hrv_avg=hrv_avg, resting_hr=resting_hr,
-                body_battery=body_battery, intensity_minutes=intensity_minutes,
-                active_calories=active_calories, training_load=training_load,
-                sleep_score=sleep_score, stress_avg=stress_avg, steps_total=steps_total,
-                spo2_avg=spo2_avg, respiration_avg=respiration_avg,
+            new_sync = WearableSync(
+                user_id=user_id, sync_date=sync_date, source=source,
+                hrv_rmssd=hrv_rmssd, resting_hr=resting_hr, recovery_score=recovery_score,
+                active_minutes=active_minutes or 0, active_calories=active_calories or 0,
+                strain_score=strain_score or 0, sleep_score=sleep_score, stress_avg=stress_avg,
+                steps=steps, spo2=spo2, respiration_rate=respiration_rate,
+                vo2_max=vo2_max, sleep_deep_pct=sleep_deep_pct, sleep_rem_pct=sleep_rem_pct,
+                sleep_light_pct=sleep_light_pct, sleep_duration_hours=sleep_duration_hours,
+                skin_temp_delta=skin_temp_delta, avg_hr=avg_hr, hr_max=hr_max,
+                calories_total=calories_total, distance_meters=distance_meters,
+                floors_climbed=floors_climbed,
                 raw_payload=json.dumps(raw_payload)
             )
             db.add(new_sync)
@@ -305,14 +466,101 @@ def save_garmin_sync(user_id, sync_date, hrv_avg, resting_hr, body_battery,
     finally:
         db.close()
 
+# Legacy alias for backward compatibility during migration
+def save_garmin_sync(user_id, sync_date, hrv_avg, resting_hr, body_battery, 
+                     intensity_minutes, active_calories, training_load, raw_payload,
+                     sleep_score=None, sleep_duration_hours=None, stress_avg=None,
+                     steps_total=None, spo2_avg=None, respiration_avg=None):
+    """Legacy wrapper — maps old Garmin column names to new WearableSync names."""
+    save_wearable_sync(
+        user_id=user_id, sync_date=sync_date, source="garmin", raw_payload=raw_payload,
+        hrv_rmssd=hrv_avg, resting_hr=resting_hr, recovery_score=body_battery,
+        active_minutes=intensity_minutes, active_calories=active_calories,
+        strain_score=training_load, sleep_score=sleep_score,
+        sleep_duration_hours=sleep_duration_hours,
+        stress_avg=stress_avg,
+        steps=steps_total, spo2=spo2_avg, respiration_rate=respiration_avg
+    )
+
 def add_manual_log(user_id, log_date, log_type, value, raw_input, log_time=None):
+    """
+    Insert or update a manual log entry.
+    - food: LLM decides if the new text is the same meal (overwrite) or a new meal (append).
+    - weight / note: upsert — one entry per day, always overwrites.
+    """
+    from backend.llm_nutrition import decide_food_action
+
     db = SessionLocal()
     try:
-        new_log = ManualLog(
-            user_id=user_id, log_date=log_date, log_time=log_time, log_type=log_type, 
-            value=value, raw_input=raw_input
-        )
-        db.add(new_log)
+        if log_type == "weight" or log_type == "note":
+            existing = (
+                db.query(ManualLog)
+                .filter(
+                    ManualLog.user_id == user_id,
+                    ManualLog.log_date == log_date,
+                    ManualLog.log_type == log_type,
+                )
+                .first()
+            )
+            if existing:
+                existing.value = value
+                existing.raw_input = raw_input
+                existing.log_time = log_time
+                existing.created_at = datetime.utcnow()
+            else:
+                db.add(ManualLog(
+                    user_id=user_id, log_date=log_date, log_time=log_time, log_type=log_type,
+                    value=value, raw_input=raw_input
+                ))
+        else:
+            # food: ask LLM to compare against today's existing entries
+            existing_rows = (
+                db.query(ManualLog)
+                .filter(
+                    ManualLog.user_id == user_id,
+                    ManualLog.log_date == log_date,
+                    ManualLog.log_type == "food",
+                )
+                .all()
+            )
+
+            # Extract text from each existing entry for the LLM to compare
+            def _extract_text(row):
+                try:
+                    raw = json.loads(row.raw_input) if isinstance(row.raw_input, str) else row.raw_input
+                    return (raw or {}).get("text") or row.raw_input or ""
+                except Exception:
+                    return row.raw_input or ""
+
+            existing_for_llm = [{"id": r.id, "text": _extract_text(r)} for r in existing_rows]
+
+            # Get the text of the new entry
+            try:
+                new_raw = json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+                new_text = (new_raw or {}).get("text") or raw_input or ""
+            except Exception:
+                new_text = raw_input or ""
+
+            decision = decide_food_action(new_text, existing_for_llm)
+
+            if decision["action"] == "overwrite":
+                target_id = decision["target_id"]
+                target = next((r for r in existing_rows if r.id == target_id), None)
+                if target:
+                    target.value = value
+                    target.raw_input = raw_input
+                    target.log_time = log_time
+                    target.created_at = datetime.utcnow()
+                else:
+                    db.add(ManualLog(
+                        user_id=user_id, log_date=log_date, log_time=log_time, log_type=log_type,
+                        value=value, raw_input=raw_input
+                    ))
+            else:
+                db.add(ManualLog(
+                    user_id=user_id, log_date=log_date, log_time=log_time, log_type=log_type,
+                    value=value, raw_input=raw_input
+                ))
         db.commit()
     finally:
         db.close()
@@ -353,7 +601,9 @@ def approve_simulator(user_id, approved: bool):
     finally:
         db.close()
 
-def save_recommendation(user_id, rec_date, sleep_rec, exercise_rec, nutrition_rec, expected_hrv, expected_rhr):
+def save_recommendation(user_id, rec_date, sleep_rec, exercise_rec, nutrition_rec, expected_hrv, expected_rhr,
+                        expected_sleep=None, expected_stress=None, expected_weight=None, expected_energy=None,
+                        long_term_impact=None):
     db = SessionLocal()
     try:
         # Only one rec per day - upsert
@@ -368,13 +618,24 @@ def save_recommendation(user_id, rec_date, sleep_rec, exercise_rec, nutrition_re
             existing.nutrition_rec = nutrition_rec
             existing.expected_hrv_delta = expected_hrv
             existing.expected_rhr_delta = expected_rhr
+            existing.expected_sleep_delta = expected_sleep
+            existing.expected_stress_delta = expected_stress
+            existing.expected_weight_delta = expected_weight
+            existing.expected_energy_delta = expected_energy
+            if long_term_impact:
+                existing.long_term_impact = long_term_impact
         else:
             new_rec = Recommendation(
                 user_id=user_id, rec_date=rec_date,
                 sleep_rec=sleep_rec, exercise_rec=exercise_rec,
                 nutrition_rec=nutrition_rec,
                 expected_hrv_delta=expected_hrv,
-                expected_rhr_delta=expected_rhr
+                expected_rhr_delta=expected_rhr,
+                expected_sleep_delta=expected_sleep,
+                expected_stress_delta=expected_stress,
+                expected_weight_delta=expected_weight,
+                expected_energy_delta=expected_energy,
+                long_term_impact=long_term_impact,
             )
             db.add(new_rec)
         db.commit()
@@ -394,7 +655,7 @@ def get_recommendations(user_id, limit=30):
 def get_recent_history(user_id, limit=30):
     db = SessionLocal()
     try:
-        syncs = db.query(GarminSync).filter(GarminSync.user_id == user_id).order_by(GarminSync.sync_date.desc()).limit(limit).all()
+        syncs = db.query(WearableSync).filter(WearableSync.user_id == user_id).order_by(WearableSync.sync_date.desc()).limit(limit).all()
         logs = db.query(ManualLog).filter(ManualLog.user_id == user_id).order_by(ManualLog.log_date.desc()).limit(limit).all()
         
         return {

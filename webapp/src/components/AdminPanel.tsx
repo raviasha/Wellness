@@ -5,7 +5,7 @@ import React, { useState, useEffect } from 'react';
 export default function AdminPanel() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [activeSection, setActiveSection] = useState<'users' | 'matrix' | 'calibration'>('users');
+  const [activeSection, setActiveSection] = useState<'users' | 'matrix' | 'calibration' | 'rawdata'>('users');
   
   // Calibration state
   const [selectedUserId, setSelectedUserId] = useState<number>(1);
@@ -21,6 +21,11 @@ export default function AdminPanel() {
   const [isEditing, setIsEditing] = useState(false);
   const [approvalLoading, setApprovalLoading] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<any>(null);
+  
+  // Raw data inspector state
+  const [rawSyncData, setRawSyncData] = useState<any[]>([]);
+  const [rawSyncLoading, setRawSyncLoading] = useState(false);
+  const [rawSyncUserId, setRawSyncUserId] = useState<number>(1);
 
   useEffect(() => {
     fetchAdminData();
@@ -215,6 +220,7 @@ export default function AdminPanel() {
         <button onClick={() => setActiveSection('users')} style={tabStyle('users')}>👤 Users</button>
         <button onClick={() => setActiveSection('matrix')} style={tabStyle('matrix')}>📉 Daily Causal Matrix</button>
         <button onClick={() => setActiveSection('calibration')} style={tabStyle('calibration')}>🧬 Calibration & Training</button>
+        <button onClick={() => setActiveSection('rawdata')} style={tabStyle('rawdata')}>🔬 Raw Sync Data</button>
         <button onClick={fetchAdminData} style={{ ...tabStyle('refresh'), marginLeft: "auto", color: "var(--text-secondary)" }}>🔄 Refresh</button>
       </div>
 
@@ -669,6 +675,102 @@ export default function AdminPanel() {
           </table>
           {data.syncs.length === 0 && data.logs.length === 0 && (
             <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-secondary)" }}>No causal data found for this user.</div>
+          )}
+        </div>
+      )}
+
+      {/* === RAW SYNC DATA INSPECTOR === */}
+      {activeSection === 'rawdata' && (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
+            <label style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>User:</label>
+            <select
+              value={rawSyncUserId}
+              onChange={(e) => setRawSyncUserId(parseInt(e.target.value))}
+              style={{ background: "var(--bg-card)", color: "#fff", border: "1px solid var(--border-color)", padding: "0.5rem 1rem", borderRadius: "var(--radius-sm)", outline: "none" }}
+            >
+              {(data?.users || []).map((u: any) => (
+                <option key={u.id} value={u.id}>{u.username} (ID {u.id})</option>
+              ))}
+            </select>
+            <button
+              onClick={async () => {
+                setRawSyncLoading(true);
+                try {
+                  const res = await fetch("/api/debug/raw-sync", { headers: { "X-User-ID": rawSyncUserId.toString() } });
+                  if (res.ok) setRawSyncData(await res.json());
+                } catch (e) { console.error(e); }
+                setRawSyncLoading(false);
+              }}
+              style={{ background: "var(--accent-primary)", color: "#fff", border: "none", padding: "0.5rem 1rem", borderRadius: "var(--radius-sm)", cursor: "pointer", fontWeight: 600 }}
+            >
+              {rawSyncLoading ? "Loading..." : "🔍 Inspect"}
+            </button>
+          </div>
+
+          {rawSyncData.length > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <p style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginBottom: "1rem" }}>
+                Compares what Garmin returned (raw) vs what was extracted into DB columns. Mismatches are highlighted.
+              </p>
+              {rawSyncData.map((row: any, i: number) => {
+                const ext = row.extracted || {};
+                const rawH = row.raw_highlights || {};
+                const fields = [
+                  { label: "HRV (RMSSD)", extracted: ext.hrv_rmssd, raw: rawH.hrv_lastNightAvg },
+                  { label: "Resting HR", extracted: ext.resting_hr, raw: rawH.resting_hr_raw },
+                  { label: "Recovery", extracted: ext.recovery_score, raw: rawH.body_battery_raw },
+                  { label: "Sleep Score", extracted: ext.sleep_score, raw: rawH.sleep_score_raw },
+                  { label: "Sleep Hours", extracted: ext.sleep_duration_hours, raw: rawH.sleep_duration_hours_raw },
+                  { label: "Stress Avg", extracted: ext.stress_avg, raw: rawH.stress_avgStressLevel },
+                  { label: "Active Mins", extracted: ext.active_minutes, raw: rawH.intensity_minutes_raw },
+                  { label: "Active Cals", extracted: ext.active_calories, raw: rawH.active_calories_raw },
+                  { label: "Steps", extracted: ext.steps, raw: rawH.steps_raw },
+                  { label: "SpO2", extracted: ext.spo2, raw: rawH.spo2_raw },
+                  { label: "Respiration", extracted: ext.respiration_rate, raw: rawH.respiration_raw },
+                ];
+                return (
+                  <div key={i} style={{ marginBottom: "1.5rem", background: "rgba(255,255,255,0.02)", borderRadius: "var(--radius-sm)", padding: "1rem", border: "1px solid var(--border-color)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem" }}>
+                      <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>📅 {row.sync_date}</span>
+                      <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Source: {row.source} · Synced: {row.created_at}</span>
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", padding: "0.4rem", color: "var(--text-secondary)", borderBottom: "1px solid var(--border-color)" }}>Metric</th>
+                          <th style={{ textAlign: "right", padding: "0.4rem", color: "#6366f1", borderBottom: "1px solid var(--border-color)" }}>DB Extracted</th>
+                          <th style={{ textAlign: "right", padding: "0.4rem", color: "#f59e0b", borderBottom: "1px solid var(--border-color)" }}>Raw Payload</th>
+                          <th style={{ textAlign: "center", padding: "0.4rem", borderBottom: "1px solid var(--border-color)" }}>Match?</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fields.map((f, fi) => {
+                          const extVal = f.extracted != null ? String(f.extracted) : "—";
+                          const rawVal = f.raw != null ? String(f.raw) : "—";
+                          const bothNull = extVal === "—" && rawVal === "—";
+                          const numMatch = f.extracted != null && f.raw != null && Number(f.extracted) === Number(f.raw);
+                          const match = f.raw == null || extVal === rawVal || bothNull || numMatch;
+                          return (
+                            <tr key={fi} style={{ background: !match ? "rgba(239, 68, 68, 0.08)" : "transparent" }}>
+                              <td style={{ padding: "0.35rem 0.4rem", color: "var(--text-primary)" }}>{f.label}</td>
+                              <td style={{ padding: "0.35rem 0.4rem", textAlign: "right", fontFamily: "monospace", color: extVal === "—" ? "var(--text-secondary)" : "#6366f1" }}>{extVal}</td>
+                              <td style={{ padding: "0.35rem 0.4rem", textAlign: "right", fontFamily: "monospace", color: rawVal === "—" ? "var(--text-secondary)" : "#f59e0b" }}>{rawVal}</td>
+                              <td style={{ padding: "0.35rem 0.4rem", textAlign: "center" }}>{f.raw == null ? "—" : match ? "✅" : "⚠️"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {rawSyncData.length === 0 && !rawSyncLoading && (
+            <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-secondary)" }}>
+              Select a user and click Inspect to view raw sync data.
+            </div>
           )}
         </div>
       )}

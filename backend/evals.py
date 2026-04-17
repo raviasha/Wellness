@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta
-from backend.database import SessionLocal, Recommendation, GarminSync, ManualLog
+from backend.database import SessionLocal, Recommendation, WearableSync, ManualLog
 
 def evaluate_user_performance(user_id):
     """
@@ -19,29 +19,61 @@ def evaluate_user_performance(user_id):
         if not rec:
             return  # No recommendation to evaluate
             
-        # 2. Get the actual deltas from Garmin Syncs
+        # 2. Get the actual deltas from Wearable Syncs
         # We need T (yesterday) and T+1 (today)
         today_date = datetime.utcnow().date().isoformat()
         
-        sync_t = db.query(GarminSync).filter(GarminSync.user_id == user_id, GarminSync.sync_date == yesterday).first()
-        sync_t_plus_1 = db.query(GarminSync).filter(GarminSync.user_id == user_id, GarminSync.sync_date == today_date).first()
+        sync_t = db.query(WearableSync).filter(WearableSync.user_id == user_id, WearableSync.sync_date == yesterday).first()
+        sync_t_plus_1 = db.query(WearableSync).filter(WearableSync.user_id == user_id, WearableSync.sync_date == today_date).first()
         
         if not sync_t or not sync_t_plus_1:
             return # Missing data for delta calculation
             
-        actual_hrv_delta = sync_t_plus_1.hrv_avg - sync_t.hrv_avg
-        actual_rhr_delta = sync_t_plus_1.resting_hr - sync_t.resting_hr
+        actual_hrv_delta = (sync_t_plus_1.hrv_rmssd or 0) - (sync_t.hrv_rmssd or 0)
+        actual_rhr_delta = (sync_t_plus_1.resting_hr or 0) - (sync_t.resting_hr or 0)
         
         # 3. Calculate Compliance
         # Check logs for yesterday (T) to see if they matched the recommendation
         logs = db.query(ManualLog).filter(ManualLog.user_id == user_id, ManualLog.log_date == yesterday).all()
         
-        compliance_score = 1.0
+        compliance_score = 0.0
+        compliance_components = 3  # exercise, sleep, nutrition
+        
         # Check exercise compliance
-        if rec.exercise_rec != "none":
-            has_exercise = any(l.log_type == "exercise" or l.log_type == "intensity_minutes" for l in logs)
-            if not has_exercise:
-                compliance_score -= 0.5
+        if rec.exercise_rec and rec.exercise_rec != "none":
+            has_exercise = any(l.log_type in ("exercise", "intensity_minutes", "workout") for l in logs)
+            # Also count wearable active_minutes as implicit exercise evidence
+            if has_exercise or (sync_t and (sync_t.active_minutes or 0) >= 15):
+                compliance_score += 1.0
+        else:
+            compliance_score += 1.0  # No exercise prescribed = auto-pass
+        
+        # Check sleep compliance
+        _SLEEP_RANGE = {
+            "less_than_6h": (0, 6), "6-7 hours": (6, 7), "7-8 hours": (7, 8),
+            "8-9 hours": (8, 9), "more_than_9h": (9, 14),
+        }
+        if rec.sleep_rec and rec.sleep_rec in _SLEEP_RANGE:
+            lo, hi = _SLEEP_RANGE[rec.sleep_rec]
+            actual_sleep = sync_t_plus_1.sleep_duration_hours if sync_t_plus_1 and sync_t_plus_1.sleep_duration_hours else None
+            if actual_sleep is not None:
+                if lo <= actual_sleep <= hi + 0.5:  # half-hour grace
+                    compliance_score += 1.0
+                elif abs(actual_sleep - (lo + hi) / 2) <= 1.5:
+                    compliance_score += 0.5  # partial credit
+            else:
+                compliance_score += 0.5  # can't penalise without data
+        else:
+            compliance_score += 1.0
+        
+        # Check nutrition compliance
+        has_food_log = any(l.log_type == "food" for l in logs)
+        if has_food_log:
+            compliance_score += 1.0
+        else:
+            compliance_score += 0.5  # no food log = can't verify, partial credit
+        
+        compliance_score = min(1.0, compliance_score / compliance_components)
         
         # 4. Calculate Fidelity Score
         # How close was the prediction? 

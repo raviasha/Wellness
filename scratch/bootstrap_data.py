@@ -3,7 +3,7 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from backend.database import init_db, save_garmin_sync, add_manual_log
+from backend.database import init_db, save_wearable_sync, add_manual_log
 
 def bootstrap_high_fidelity():
     print("Bootstrapping High-Fidelity Sandbox Data (15 Days)...")
@@ -37,15 +37,17 @@ def bootstrap_high_fidelity():
         weight_delta = (calories - 2200) / 7700.0 # 7700 kcal = 1kg
         weight += weight_delta
         
-        # Save Garmin Sync
-        save_garmin_sync(
+        # Save Wearable Sync
+        save_wearable_sync(
+            user_id=1,
             sync_date=date_str,
-            hrv_avg=int(hrv),
+            source="garmin",
+            hrv_rmssd=int(hrv),
             resting_hr=int(rhr),
-            body_battery=int(sleep_quality * 10),
-            intensity_minutes=intensity_mins,
+            recovery_score=int(sleep_quality * 10),
+            active_minutes=intensity_mins,
             active_calories=int(intensity_mins * 5),
-            training_load=intensity_mins * 0.8,
+            strain_score=intensity_mins * 0.8,
             raw_payload={"synthetic": True}
         )
         

@@ -2,7 +2,7 @@ import sqlite3
 import json
 import os
 from datetime import datetime, timedelta
-from backend.database import init_db, save_garmin_sync, add_manual_log
+from backend.database import init_db, save_wearable_sync, add_manual_log
 from backend.calibration import calibrate_user_persona
 
 def verify_regression():
@@ -35,11 +35,13 @@ def verify_regression():
         proxy = 8.0 if i % 2 == 0 else 6.0
         hrv += (proxy * 4.0)
         
-        save_garmin_sync(
+        save_wearable_sync(
+            user_id=1,
             sync_date=date_str,
-            hrv_avg=int(hrv),
+            source="garmin",
+            hrv_rmssd=int(hrv),
             resting_hr=60,
-            body_battery=battery,
+            recovery_score=battery,
             raw_payload={"synthetic": True}
         )
         

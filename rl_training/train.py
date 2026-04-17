@@ -5,13 +5,21 @@ import numpy as np
 from rl_training.env_wrapper import WellnessGymEnv
 from rl_training.ppo_lite import PPOLite
 
-def train(user_id: int = None, persona_path: str = None, total_steps: int = 50000):
-    """Train a PPO agent. If user_id is given, trains a per-user model with calibrated persona."""
-    print(f"Initializing environment (user_id={user_id})...")
+def train(user_id: int = None, persona_path: str = None, distribution_path: str = None, total_steps: int = 50000):
+    """Train a PPO agent. If user_id is given, trains a per-user model with calibrated persona.
+    
+    Pass distribution_path to use the Gaussian copula distribution simulator instead
+    of the rule-based simulator. The two can be combined (persona_path and distribution_path
+    can both be provided — persona determines compliance/goal/starting biomarkers, while
+    the distribution replaces the per-biomarker response rules).
+    """
+    mode = "distribution" if distribution_path else "rules"
+    print(f"Initializing environment (user_id={user_id}, simulator_mode={mode})...")
     
     env = WellnessGymEnv(
         task_name="personal_coaching",
-        persona_path=persona_path
+        persona_path=persona_path,
+        distribution_path=distribution_path,
     )
     
     # Environment info
@@ -81,4 +89,18 @@ def train(user_id: int = None, persona_path: str = None, total_steps: int = 5000
     return model_path
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    parser = argparse.ArgumentParser(description="Train PPO wellness agent")
+    parser.add_argument("--user-id", type=int, default=None)
+    parser.add_argument("--persona-path", type=str, default=None)
+    parser.add_argument("--distribution-path", type=str, default=None,
+                        help="Path to distribution.json from calibrate_user_distribution(). "
+                             "Enables the Gaussian copula simulator.")
+    parser.add_argument("--total-steps", type=int, default=50000)
+    args = parser.parse_args()
+    train(
+        user_id=args.user_id,
+        persona_path=args.persona_path,
+        distribution_path=args.distribution_path,
+        total_steps=args.total_steps,
+    )

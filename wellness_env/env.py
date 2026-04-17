@@ -8,6 +8,8 @@ import json
 import copy
 from typing import Any
 
+from typing import Literal, Optional
+
 from .graders import grade_multi_outcome, grade_resistant_adaptation, grade_single_goal
 from .models import (
     Action,
@@ -67,7 +69,12 @@ class WellnessEnv:
     biomarker changes (outcomes), not predefined action-quality scores.
     """
 
-    def __init__(self, seed: int | None = None):
+    def __init__(
+        self,
+        seed: int | None = None,
+        simulator_mode: Literal["rules", "distribution"] = "rules",
+        distribution: Optional[Any] = None,
+    ):
         self._seed = seed
         self._rng = random.Random(seed)
         self._task_name: str | None = None
@@ -83,6 +90,13 @@ class WellnessEnv:
         self._history: list[dict[str, Any]] = []
         self._cumulative_reward: float = 0.0
         self._done: bool = False
+        self._simulator_mode: Literal["rules", "distribution"] = simulator_mode
+        self._distribution: Optional[Any] = distribution  # JointDistribution | None
+
+    def set_distribution(self, distribution: Any) -> None:
+        """Attach a fitted JointDistribution and switch to distribution mode."""
+        self._distribution = distribution
+        self._simulator_mode = "distribution"
 
     # -------------------------------------------------------------------
     # OpenEnv interface
@@ -153,11 +167,18 @@ class WellnessEnv:
         # 2. Life events
         actual_action = apply_life_event(actual_action, self._rng)
 
-        # 3. Compute biomarker changes (the hidden response model)
-        deltas = compute_biomarker_changes(
-            actual_action, self._biomarkers, self._persona,
-            self._history, self._rng,
-        )
+        # 3. Compute biomarker changes
+        if self._simulator_mode == "distribution" and self._distribution is not None:
+            from .distribution_simulator import compute_biomarker_changes_from_distribution
+            deltas = compute_biomarker_changes_from_distribution(
+                actual_action, self._biomarkers, self._persona,
+                self._distribution, self._history, self._rng,
+            )
+        else:
+            deltas = compute_biomarker_changes(
+                actual_action, self._biomarkers, self._persona,
+                self._history, self._rng,
+            )
 
         # 4. Apply deltas to get new biomarker state
         self._biomarkers = apply_deltas(self._biomarkers, deltas)

@@ -19,3 +19,8 @@ environment:
     the agent must learn through experience.
 
 entrypoint: python inference.py
+
+env_vars:
+  TERRA_API_KEY: "your_terra_api_key_here"
+  TERRA_DEV_ID: "your_terra_dev_id_here"
+  TERRA_WEBHOOK_SECRET: "your_terra_webhook_secret_here"

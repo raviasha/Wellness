@@ -47,7 +47,7 @@ def calibrate_user_persona(user_id):
         
         # Outcome: Change between Day T and Day T+1
         delta_sleep_score = sync_t_plus_1.get("sleep_score", 70) - sync_t.get("sleep_score", 70)
-        delta_hrv = sync_t_plus_1["hrv_avg"] - sync_t["hrv_avg"]
+        delta_hrv = sync_t_plus_1["hrv_rmssd"] - sync_t["hrv_rmssd"]
         delta_rhr = sync_t_plus_1["resting_hr"] - sync_t["resting_hr"]
         delta_stress = sync_t_plus_1.get("stress_avg", 50) - sync_t.get("stress_avg", 50)
         
@@ -72,7 +72,7 @@ def calibrate_user_persona(user_id):
         quality_score = (q_sum / q_count) if q_count > 0 else 1.0
         
         # Garmin High-Fidelity Features
-        intensity_mins = sync_t.get("intensity_minutes", 0)
+        intensity_mins = sync_t.get("active_minutes", 0)
         active_cals = sync_t.get("active_calories", 0)
         
         # Sleep Hours Day T (Physical actionable command)
