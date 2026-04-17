@@ -35,10 +35,9 @@ from backend.database import (
 )
 from wellness_env.payoff import GOAL_WEIGHTS, DELTA_SCALES, _DELTA_WEIGHT, _STATE_WEIGHT
 from backend.llm_nutrition import parse_nutrition_text
-from backend.calibration import calibrate_user_persona
+from backend.distribution_calibration import calibrate_user_distribution as calibrate_user_persona
 from backend.inference_service import get_coaching_recommendation
-from backend.evals import evaluate_user_performance
-from backend.eval_service import evaluate_past_recommendations
+from backend.eval_service import evaluate_past_recommendations, evaluate_user_performance
 from backend.upload_service import parse_apple_health_xml, parse_csv_upload, parse_json_upload
 
 def _safe_extract(data: dict, key: str, subkey: str) -> Any:

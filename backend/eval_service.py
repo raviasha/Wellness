@@ -214,3 +214,7 @@ def evaluate_past_recommendations(user_id: int):
         print(f"[EVAL_SERVICE] Critical error in evaluate_past_recommendations: {e}")
     finally:
         db.close()
+
+
+# Backward-compatible alias (was in backend/evals.py)
+evaluate_user_performance = evaluate_past_recommendations
