@@ -608,7 +608,7 @@ export default function AdminPanel() {
                   const row: any = { date };
 
                   // === OUTCOMES (Y) from Today ===
-                  row.hrv = todaySync.hrv_avg;
+                  row.hrv = todaySync.hrv_rmssd;
                   row.rhr = todaySync.resting_hr;
                   row.sleep_score = todaySync.sleep_score;
                   row.stress_avg = todaySync.stress_avg;
@@ -617,18 +617,22 @@ export default function AdminPanel() {
 
                   // === INPUTS (X) from Yesterday (Lagged) ===
                   row.active_calories = prevSync.active_calories;
-                  row.intensity_minutes = prevSync.intensity_minutes;
+                  row.intensity_minutes = prevSync.active_minutes;
                   
-                  // Extract high-fidelity Sleep Hours (Input) from Today's raw payload (Morning After)
-                  try {
-                    const raw = typeof todaySync.raw_payload === 'string' ? JSON.parse(todaySync.raw_payload) : todaySync.raw_payload;
-                    const sleepObj = raw?.sleep || {};
-                    const dto = sleepObj?.dailySleepDTO || {};
-                    const duration = sleepObj?.durationInSeconds || dto?.sleepDurationInSeconds || dto?.sleepTimeSeconds;
-                    if (duration) {
-                      row.sleep_h = (duration / 3600).toFixed(1);
-                    }
-                  } catch(e) {}
+                  // Sleep duration: use stored column first, fall back to raw payload
+                  if (todaySync.sleep_duration_hours) {
+                    row.sleep_h = todaySync.sleep_duration_hours;
+                  } else {
+                    try {
+                      const raw = typeof todaySync.raw_payload === 'string' ? JSON.parse(todaySync.raw_payload) : todaySync.raw_payload;
+                      const sleepObj = raw?.sleep || {};
+                      const dto = sleepObj?.dailySleepDTO || {};
+                      const duration = sleepObj?.durationInSeconds || dto?.sleepDurationInSeconds || dto?.sleepTimeSeconds;
+                      if (duration) {
+                        row.sleep_h = (duration / 3600).toFixed(1);
+                      }
+                    } catch(e) {}
+                  }
 
                   // Macros & Quality from Yesterday's logs
                   prevLogs.forEach((l: any) => {

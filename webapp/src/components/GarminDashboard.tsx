@@ -680,13 +680,13 @@ export default function GarminDashboard() {
                     </div>
                     <div className="premium-card" style={{ padding: "1rem", textAlign: "center", borderTop: "3px solid #ec4899" }}>
                        <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", textTransform: "uppercase" }}>Intensity Mins</div>
-                       <div style={{ fontSize: "1.5rem", fontWeight: 800, color: "var(--text-primary)", margin: "0.25rem 0" }}>{latest?.today_active_minutes || "0"}m</div>
-                       <div style={{ fontSize: "0.6rem", color: "var(--text-secondary)" }}>today</div>
+                       <div style={{ fontSize: "1.5rem", fontWeight: 800, color: "var(--text-primary)", margin: "0.25rem 0" }}>{latest?.active_minutes || latest?.today_active_minutes || "0"}m</div>
+                       <div style={{ fontSize: "0.6rem", color: "var(--text-secondary)" }}>yesterday → today</div>
                     </div>
                     <div className="premium-card" style={{ padding: "1rem", textAlign: "center", borderTop: "3px solid #8b5cf6" }}>
                        <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", textTransform: "uppercase" }}>Active Cals</div>
-                       <div style={{ fontSize: "1.5rem", fontWeight: 800, color: "var(--text-primary)", margin: "0.25rem 0" }}>{latest?.today_active_calories || "0"}</div>
-                       <div style={{ fontSize: "0.6rem", color: "var(--text-secondary)" }}>today</div>
+                       <div style={{ fontSize: "1.5rem", fontWeight: 800, color: "var(--text-primary)", margin: "0.25rem 0" }}>{latest?.active_calories || latest?.today_active_calories || "0"}</div>
+                       <div style={{ fontSize: "0.6rem", color: "var(--text-secondary)" }}>yesterday → today</div>
                     </div>
                     <div className="premium-card" style={{ padding: "1rem", textAlign: "center", borderTop: "3px solid #64748b" }}>
                        <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", textTransform: "uppercase" }}>Dietary Cals</div>
