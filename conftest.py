@@ -409,7 +409,11 @@ def _coverage_bar(pct: float) -> str:
 
 @pytest.fixture(autouse=True)
 def mock_openai():
-    """Mock OpenAI client to avoid API key requirement in tests"""
+    """Mock OpenAI client only if API key is missing."""
+    if os.environ.get("OPENAI_API_KEY"):
+        yield None
+        return
+
     with patch("openai.OpenAI") as mock:
         instance = mock.return_value
         # Configure a default mock response for chat.completions.create
