@@ -8,15 +8,20 @@ sys.path.append(str(Path(__file__).parent.parent))
 from backend.llm_nutrition import parse_nutrition_text
 
 
-def test_nutrition_parser():
-    if not os.environ.get("OPENAI_API_KEY"):
-        env_path = Path(__file__).parent.parent / ".env"
-        if env_path.exists():
-            with open(env_path) as f:
-                for line in f:
-                    if "=" in line:
-                        key, value = line.strip().split("=", 1)
-                        os.environ[key] = value
+from unittest.mock import patch, MagicMock
+
+@patch("backend.llm_nutrition.OpenAI")
+def test_nutrition_parser(mock_openai):
+    # Mock the OpenAI client and response
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    
+    # Configure mock response
+    mock_response = MagicMock()
+    mock_response.choices = [
+        MagicMock(message=MagicMock(content='{"calories": 350, "protein_g": 50, "carbs_g": 10, "fat_g": 10, "nutrition_type": "high_protein", "quality_score": 9}'))
+    ]
+    mock_client.chat.completions.create.return_value = mock_response
 
     test_cases = [
         "I ate a chicken breast and some broccoli",

@@ -390,7 +390,7 @@ def fetch_garmin_data(email=None, password=None, target_date: datetime.date = No
 
 def get_mock_payload(date_str):
     return {
-        "source": "mock",
+        "source": "mock_garmin",
         "date": date_str,
         "body_battery": {"charged": 55, "drained": 42, "latestValue": 72},
         "hrv": {"lastNightAvg": 45, "baseline": {"currentValue": 43}},

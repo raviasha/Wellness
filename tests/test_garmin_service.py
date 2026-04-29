@@ -58,15 +58,15 @@ def test_get_client_too_many_requests(mock_exists, mock_garmin_class):
 @patch("backend.garmin_service._get_client")
 def test_fetch_garmin_data_success(mock_get_client):
     mock_client = MagicMock()
-    mock_client.get_heart_rates.return_value = {"restingHeartRate": 60}
+    mock_client.get_rhr_day.return_value = {"restingHeartRate": 60}
     mock_client.get_hrv_data.return_value = {"hrvSummary": {"lastNightAvg": 50}}
     mock_get_client.return_value = mock_client
     
     data = fetch_garmin_data("test@example.com", "pass", datetime.date(2023, 1, 1))
     
     assert data["source"] == "garmin"
-    assert data["resting_hr"] == 60
-    assert data["hrv_rmssd"] == 50
+    assert data["rhr"]["restingHeartRate"] == 60
+    assert data["hrv"]["hrvSummary"]["lastNightAvg"] == 50
 
 def test_fetch_garmin_data_no_creds():
     with patch.dict(os.environ, {}, clear=True):
