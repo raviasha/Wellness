@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from unittest.mock import MagicMock, patch
 import pytest
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -405,3 +406,16 @@ def _coverage_bar(pct: float) -> str:
         return "🟠"
     else:
         return "🔴"
+
+@pytest.fixture(autouse=True)
+def mock_openai():
+    """Mock OpenAI client to avoid API key requirement in tests"""
+    with patch("openai.OpenAI") as mock:
+        instance = mock.return_value
+        # Configure a default mock response for chat.completions.create
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content='{"calories": 100, "protein_g": 5}'))
+        ]
+        instance.chat.completions.create.return_value = mock_response
+        yield mock
