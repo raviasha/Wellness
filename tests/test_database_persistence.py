@@ -1,7 +1,7 @@
 import os
 import json
 import pytest
-from backend.database import init_db, save_wearable_sync, add_manual_log, get_recent_history, get_user_profile
+from backend.database import init_db, create_user, save_wearable_sync, add_manual_log, get_recent_history, get_user_profile
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "wellness.db")
 USER_ID = 1
@@ -11,8 +11,14 @@ def test_database_persistence():
     init_db()
     assert os.path.exists(DB_PATH)
 
-    # 2. Test User Profile
-    profile = get_user_profile(USER_ID)
+    # 2. Ensure user exists (create if not present) and track the actual user id
+    existing = get_user_profile(USER_ID)
+    if existing is None:
+        result = create_user(username=f"testuser_{USER_ID}", name="Test User")
+        test_user_id = result["id"]
+    else:
+        test_user_id = USER_ID
+    profile = get_user_profile(test_user_id)
     assert profile is not None
 
     # 3. Test Wearable Sync Persistence
@@ -22,7 +28,7 @@ def test_database_persistence():
         "recovery": {"score": 80}
     }
     save_wearable_sync(
-        user_id=USER_ID,
+        user_id=test_user_id,
         sync_date="2026-04-12",
         source="garmin",
         hrv_rmssd=50,
@@ -32,10 +38,10 @@ def test_database_persistence():
     )
 
     # 4. Test Manual Log Persistence
-    add_manual_log(USER_ID, "2026-04-12", "food", 0.0, "Ate a healthy breakfast")
+    add_manual_log(test_user_id, "2026-04-12", "food", 0.0, "Ate a healthy breakfast")
 
     # 5. Verify History retrieval
-    history = get_recent_history(USER_ID)
+    history = get_recent_history(test_user_id)
     assert len(history['syncs']) >= 1
     assert len(history['logs']) >= 1
 

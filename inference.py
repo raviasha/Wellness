@@ -14,7 +14,7 @@ import traceback
 from typing import Any
 
 from wellness_env import WellnessEnv, Action, Observation
-from wellness_env.models import SleepDuration, ExerciseType, NutritionType, Goal
+from wellness_env.models import SleepDuration, ActivityLevel, Goal
 from wellness_env.payoff import _linear_slope, _stddev
 
 # ---------------------------------------------------------------------------
@@ -28,32 +28,27 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", HF_TOKEN)
 
 SYSTEM_PROMPT = """\
 You are a wellness decision system. Follow these EXACT rules to choose actions.
+Actions are: sleep duration + activity level. No nutrition input.
 
 ## SLEEP RULES (pick ONE):
-1. If cortisol > 65 OR energy < 30 → "8_to_9h"
+1. If stress_avg > 65 OR body_battery < 30 → "8_to_9h"
 2. If compliance_rate <= 0.3 → "7_to_8h"
 3. If goal is stress_management → "8_to_9h"
-4. If goal is athletic_performance AND HRV dropped (hrv_delta < -2) → "8_to_9h"
+4. If goal is cardiovascular_fitness AND HRV dropped (hrv_delta < -2) → "8_to_9h"
 5. Default → "7_to_8h"
 
-## EXERCISE RULES (pick ONE):
-1. If cortisol > 65 OR energy < 30 → "yoga"
-2. If compliance_rate <= 0.3 → "light_cardio"
-3. If goal is athletic_performance AND HRV dropped (hrv_delta < -2) → "yoga"
-4. If goal is athletic_performance → alternate "hiit" on odd days, "strength" on even days
-5. If goal is muscle_gain → "strength"
-6. If goal is stress_management → "yoga"
-7. If goal is weight_loss → "moderate_cardio" if energy > 50, else "light_cardio"
-8. Default → "moderate_cardio"
-
-## NUTRITION RULES (pick ONE):
-1. If goal is athletic_performance OR muscle_gain → "high_protein"
-2. If goal is stress_management → "balanced"
-3. If goal is weight_loss → "balanced"
-4. Default → "balanced"
+## ACTIVITY RULES (pick ONE):
+1. If stress_avg > 65 OR body_battery < 30 → "rest_day"
+2. If compliance_rate <= 0.3 → "light_activity"
+3. If goal is cardiovascular_fitness AND HRV dropped (hrv_delta < -2) → "rest_day"
+4. If goal is cardiovascular_fitness → alternate "vigorous_activity" on odd days, "moderate_activity" on even days
+5. If goal is stress_management → "light_activity"
+6. If goal is active_living → "moderate_activity" if body_battery > 50, else "light_activity"
+7. If goal is sleep_optimization → "moderate_activity"
+8. Default → "moderate_activity"
 
 ## OUTPUT: JSON only, no markdown:
-{"sleep": "...", "exercise": "...", "nutrition": "..."}
+{"sleep": "...", "activity": "..."}
 """
 
 
@@ -64,7 +59,7 @@ def build_user_message(obs: Observation, step_num: int) -> str:
     return (
         f"day={step_num} total={obs.total_days} goal={obs.goal.value} "
         f"compliance={obs.compliance_rate}\n"
-        f"cortisol={b.cortisol_proxy:.1f} energy={b.energy_level:.1f} "
+        f"stress_avg={b.stress_avg:.1f} body_battery={b.body_battery:.1f} "
         f"hrv_delta={d.hrv:+.2f}"
     )
 
@@ -99,8 +94,7 @@ def call_llm(obs: Observation, step_num: int, history_actions: list[dict]) -> Ac
         data = json.loads(content)
         return Action(
             sleep=SleepDuration(data["sleep"]),
-            exercise=ExerciseType(data["exercise"]),
-            nutrition=NutritionType(data["nutrition"]),
+            activity=ActivityLevel(data["activity"]),
         )
     except Exception:
         return _fallback_action(obs)
@@ -116,72 +110,63 @@ def _fallback_action(obs: Observation) -> Action:
     goal = obs.goal
     day = obs.day
 
-    # Recovery priority: if cortisol is high or energy is low
-    if b.cortisol_proxy > 65 or b.energy_level < 30:
+    # Recovery priority: if stress is high or battery is low
+    if b.stress_avg > 65 or b.body_battery < 30:
         return Action(
             sleep=SleepDuration.OPTIMAL_HIGH,
-            exercise=ExerciseType.YOGA,
-            nutrition=NutritionType.BALANCED,
+            activity=ActivityLevel.REST_DAY,
         )
 
     # Low compliance: moderate, achievable changes
     if obs.compliance_rate <= 0.3:
         return Action(
             sleep=SleepDuration.OPTIMAL_LOW,
-            exercise=ExerciseType.LIGHT_CARDIO,
-            nutrition=NutritionType.BALANCED,
+            activity=ActivityLevel.LIGHT_ACTIVITY,
         )
 
     # Goal-specific strategies
-    if goal == Goal.WEIGHT_LOSS:
-        exercise = ExerciseType.MODERATE_CARDIO if b.energy_level > 50 else ExerciseType.LIGHT_CARDIO
+    if goal == Goal.ACTIVE_LIVING:
+        activity = ActivityLevel.MODERATE_ACTIVITY if b.body_battery > 50 else ActivityLevel.LIGHT_ACTIVITY
         return Action(
             sleep=SleepDuration.OPTIMAL_LOW,
-            exercise=exercise,
-            nutrition=NutritionType.BALANCED,
+            activity=activity,
         )
-    elif goal == Goal.MUSCLE_GAIN:
-        return Action(
-            sleep=SleepDuration.OPTIMAL_HIGH,
-            exercise=ExerciseType.STRENGTH,
-            nutrition=NutritionType.HIGH_PROTEIN,
-        )
-    elif goal == Goal.ATHLETIC_PERFORMANCE:
+    elif goal == Goal.CARDIOVASCULAR_FITNESS:
         if d.hrv < -2:  # HRV dropped → need recovery
             return Action(
                 sleep=SleepDuration.OPTIMAL_HIGH,
-                exercise=ExerciseType.YOGA,
-                nutrition=NutritionType.HIGH_PROTEIN,
+                activity=ActivityLevel.REST_DAY,
             )
-        # Alternate intense/recovery to avoid overtraining (threshold=2-3)
+        # Alternate intense/recovery to avoid overtraining
         if day % 3 == 0:
-            exercise = ExerciseType.YOGA  # recovery day
+            activity = ActivityLevel.REST_DAY
         elif day % 2 == 1:
-            exercise = ExerciseType.HIIT
+            activity = ActivityLevel.HIGH_INTENSITY
         else:
-            exercise = ExerciseType.STRENGTH
+            activity = ActivityLevel.VIGOROUS_ACTIVITY
         return Action(
             sleep=SleepDuration.OPTIMAL_LOW,
-            exercise=exercise,
-            nutrition=NutritionType.HIGH_PROTEIN,
+            activity=activity,
         )
     elif goal == Goal.STRESS_MANAGEMENT:
         return Action(
             sleep=SleepDuration.OPTIMAL_HIGH,
-            exercise=ExerciseType.YOGA,
-            nutrition=NutritionType.BALANCED,
+            activity=ActivityLevel.LIGHT_ACTIVITY,
         )
-    elif goal == Goal.LONGEVITY:
+    elif goal == Goal.SLEEP_OPTIMIZATION:
+        return Action(
+            sleep=SleepDuration.OPTIMAL_HIGH,
+            activity=ActivityLevel.MODERATE_ACTIVITY,
+        )
+    elif goal == Goal.RECOVERY_ENERGY:
+        return Action(
+            sleep=SleepDuration.OPTIMAL_HIGH,
+            activity=ActivityLevel.LIGHT_ACTIVITY,
+        )
+    else:
         return Action(
             sleep=SleepDuration.OPTIMAL_LOW,
-            exercise=ExerciseType.MODERATE_CARDIO,
-            nutrition=NutritionType.BALANCED,
-        )
-    else:  # overall_wellness
-        return Action(
-            sleep=SleepDuration.OPTIMAL_LOW,
-            exercise=ExerciseType.MODERATE_CARDIO,
-            nutrition=NutritionType.BALANCED,
+            activity=ActivityLevel.MODERATE_ACTIVITY,
         )
 
 
@@ -189,7 +174,7 @@ def _fallback_action(obs: Observation) -> Action:
 # Main runner
 # ---------------------------------------------------------------------------
 
-TASKS = ["single_goal", "multi_outcome", "resistant_adaptation"]
+TASKS = ["cardiovascular_fitness", "stress_recovery", "sedentary_activation", "sleep_optimization"]
 
 
 def run_task(env: WellnessEnv, task_name: str, use_llm: bool = True) -> None:
@@ -233,19 +218,17 @@ def run_task(env: WellnessEnv, task_name: str, use_llm: bool = True) -> None:
             # Compact biomarker snapshot
             b = result.observation.biomarkers
             bio_str = (
-                f"rhr={b.resting_hr},hrv={b.hrv},vo2={b.vo2_max},"
-                f"bf={b.body_fat_pct},lm={b.lean_mass_kg},"
-                f"se={b.sleep_efficiency},cortisol={b.cortisol_proxy},"
-                f"energy={b.energy_level}"
+                f"rhr={b.resting_hr},hrv={b.hrv},"
+                f"sleep_score={b.sleep_score},stress_avg={b.stress_avg},"
+                f"body_battery={b.body_battery}"
             )
 
             # Compact delta snapshot
             dl = result.observation.deltas
             delta_str = (
-                f"rhr={dl.resting_hr:+.3f},hrv={dl.hrv:+.3f},vo2={dl.vo2_max:+.4f},"
-                f"bf={dl.body_fat_pct:+.4f},lm={dl.lean_mass_kg:+.4f},"
-                f"se={dl.sleep_efficiency:+.3f},cortisol={dl.cortisol_proxy:+.3f},"
-                f"energy={dl.energy_level:+.3f}"
+                f"rhr={dl.resting_hr:+.3f},hrv={dl.hrv:+.3f},"
+                f"sleep_score={dl.sleep_score:+.3f},stress_avg={dl.stress_avg:+.3f},"
+                f"body_battery={dl.body_battery:+.3f}"
             )
 
             print(

@@ -1,7 +1,9 @@
 import os
 import json
 from openai import OpenAI
-from wellness_env.models import NutritionType
+
+# Nutrition types for LLM classification (standalone, not in action space)
+_NUTRITION_TYPES = ["high_protein", "high_carb", "balanced", "processed", "skipped"]
 
 def parse_nutrition_text(text: str) -> dict:
     """
@@ -19,7 +21,7 @@ def parse_nutrition_text(text: str) -> dict:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     model = os.environ.get("MODEL_NAME", "gpt-4o-mini")
     
-    nutrition_types = [t.value for t in NutritionType]
+    nutrition_types = _NUTRITION_TYPES
     
     system_prompt = f"""
     You are a nutrition expert. Your task is to convert natural language food logs into structured macro estimates.

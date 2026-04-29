@@ -1,11 +1,11 @@
 {
   "hrv_sleep_sensitivity": 1.5,
   "rhr_sleep_benefit": 0.0,
-  "body_fat_nutrition_sensitivity": 0.01,
-  "cortisol_nutrition_stress": 1.0,
-  "vo2_cardio_gain": 0.15,
-  "body_fat_exercise_loss": -0.01,
-  "lean_mass_protein_gain": 0.02,
-  "energy_nutrition_sensitivity": 8.0,
-  "rhr_exercise_benefit": 0.0
+  "cortisol_sleep_recovery": -3.0,
+  "rhr_exercise_benefit": 0.0,
+  "cortisol_exercise_stress": 5.0,
+  "overtraining_threshold": 3,
+  "sleep_debt_exercise_penalty": 0.1,
+  "overtraining_cortisol_spike": 15.0,
+  "energy_sensitivity": 8.0
 }

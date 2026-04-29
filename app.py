@@ -14,7 +14,7 @@ from typing import Any
 from datetime import date, datetime, timedelta
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -31,7 +31,7 @@ from backend.database import (
     get_users, update_garmin_creds, get_garmin_creds,
     update_terra_creds, get_wearable_creds,
     approve_simulator, save_recommendation, create_user,
-    set_user_device
+    set_user_device, set_custom_goal, get_custom_goal, clear_custom_goal
 )
 from wellness_env.payoff import GOAL_WEIGHTS, DELTA_SCALES, _DELTA_WEIGHT, _STATE_WEIGHT
 from backend.llm_nutrition import parse_nutrition_text
@@ -81,6 +81,53 @@ def _safe_extract(data: dict, key: str, subkey: str) -> Any:
         
     if isinstance(val, dict):
         return val.get(subkey)
+    return None
+
+
+def _extract_vo2_from_obj(obj: Any) -> float | None:
+    """Best-effort VO2 extraction across Garmin schema variants."""
+    def _is_plausible_vo2(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and 20 <= float(v) <= 90
+
+    if obj is None:
+        return None
+    if isinstance(obj, bool):
+        return None
+    if isinstance(obj, (int, float)):
+        return float(obj) if _is_plausible_vo2(obj) else None
+    if isinstance(obj, list):
+        for item in obj:
+            v = _extract_vo2_from_obj(item)
+            if v is not None:
+                return v
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    # Priority keys seen in Garmin payloads
+    direct_candidates = [
+        obj.get("vo2MaxValue"),
+        obj.get("vo2Max"),
+        obj.get("latestEnhancedAverageVO2Max"),
+        obj.get("latestVo2Max"),
+        (obj.get("generic") or {}).get("vo2MaxPreciseValue"),
+        (obj.get("mostRecentVO2Max") or {}).get("value"),
+        (obj.get("mostRecentVO2Max") or {}).get("vo2MaxValue"),
+        (obj.get("mostRecentVO2Max") or {}).get("vo2Max"),
+        (obj.get("mostRecentVO2MaxRunning") or {}).get("vo2MaxValue"),
+        (obj.get("mostRecentVO2MaxCycling") or {}).get("vo2MaxValue"),
+    ]
+    for c in direct_candidates:
+        if _is_plausible_vo2(c):
+            return float(c)
+
+    # Generic fallback: recurse through VO2-related keys first
+    for k, v in obj.items():
+        if "vo2" in str(k).lower():
+            parsed = _extract_vo2_from_obj(v)
+            if parsed is not None:
+                return parsed
+
     return None
 
 app = FastAPI(title="Wellness-Outcome OpenEnv", version="1.0.0")
@@ -180,12 +227,24 @@ def _do_wearable_sync(user_id: int, dt: date) -> dict:
                 intensity_minutes=data.get("intensity_minutes", 0) or 0,
                 active_calories=data.get("active_calories", 0),
                 training_load=data.get("training_load", 0.0),
-                sleep_score=_safe_extract(data, "sleep", "score"),
+                sleep_score=data.get("sleep_score"),
                 sleep_duration_hours=data.get("sleep_duration_hours"),
                 stress_avg=_safe_extract(data, "stress", "avg"),
                 steps_total=(data.get("steps") or {}).get("totalSteps"),
                 spo2_avg=_safe_extract(data, "spo2", "latestSpO2"),
                 respiration_avg=_safe_extract(data, "respiration", "latestRespiration"),
+                # Circadian + exercise enrichment
+                sleep_start_local=data.get("sleep_start_local"),
+                sleep_end_local=data.get("sleep_end_local"),
+                sleep_start_hour=data.get("sleep_start_hour"),
+                sleep_deep_pct=data.get("sleep_deep_pct"),
+                sleep_rem_pct=data.get("sleep_rem_pct"),
+                sleep_light_pct=data.get("sleep_light_pct"),
+                sleep_awake_pct=data.get("sleep_awake_pct"),
+                sleep_stage_quality=data.get("sleep_stage_quality"),
+                exercise_type=data.get("primary_exercise_type"),
+                exercise_duration_minutes=data.get("exercise_duration_minutes"),
+                vo2_max=data.get("vo2_max"),
                 raw_payload=data
             )
             _record_sync_success(user_id)
@@ -237,6 +296,20 @@ def _run_sync_cycle():
                 if not user_rate_limited:
                     evaluate_past_recommendations(uid)
                     evaluate_user_performance(uid)
+                    # Auto-trigger ML model training when user crosses the min_days gate
+                    try:
+                        from backend.maturity_config import count_paired_days, get_user_thresholds
+                        from backend.outcome_models import load_outcome_models, train_outcome_models
+                        paired = count_paired_days(uid)
+                        thr = get_user_thresholds(uid)
+                        if paired >= thr["ml_model_min_days"]:
+                            existing = load_outcome_models(uid)
+                            # Retrain once a week (when data_days has grown by 7+)
+                            if existing is None or (paired - existing.data_days) >= 7:
+                                print(f"[Auto-Sync] Training ML models for user {uid} ({paired} paired days)")
+                                train_outcome_models(uid)
+                    except Exception as train_e:
+                        print(f"[Auto-Sync] ML training error for user {uid}: {train_e}")
             except Exception as e:
                 print(f"[Auto-Sync] Error for user {uid}: {e}")
             if i < len(users) - 1:
@@ -949,6 +1022,128 @@ def train_status(x_user_id: int = Header(...)):
     return JSONResponse(status)
 
 
+# ---------------------------------------------------------------------------
+# Maturity tier endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/maturity/status")
+def maturity_status(x_user_id: int = Header(...)):
+    """Return the user's current model maturity status (tier, data days, gates)."""
+    from backend.maturity_config import get_maturity_status
+    status = get_maturity_status(x_user_id)
+    return JSONResponse(status.to_dict())
+
+
+@app.post("/api/maturity/transition")
+def maturity_advance(x_user_id: int = Header(...)):
+    """Advance the user's active tier by one step (if they qualify)."""
+    from backend.maturity_config import get_maturity_status, set_active_tier, TIER_ORDER
+    status = get_maturity_status(x_user_id)
+    if not status.can_advance:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot advance from '{status.active_tier}': {status.recommendation_text}",
+        )
+    new_tier = status.next_tier
+    set_active_tier(x_user_id, new_tier)
+    return JSONResponse({"ok": True, "active_tier": new_tier})
+
+
+@app.post("/api/maturity/revert")
+def maturity_revert(x_user_id: int = Header(...)):
+    """Revert the user's active tier by one step."""
+    from backend.maturity_config import get_maturity_status, set_active_tier
+    status = get_maturity_status(x_user_id)
+    if not status.can_revert:
+        raise HTTPException(
+            status_code=400,
+            detail="Already at the base tier (rules); cannot revert further.",
+        )
+    set_active_tier(x_user_id, status.prev_tier)
+    return JSONResponse({"ok": True, "active_tier": status.prev_tier})
+
+
+@app.post("/api/maturity/jump")
+async def maturity_jump(request: Request, x_user_id: int = Header(...)):
+    """Jump directly to any previous tier (allows reverting more than one step)."""
+    from backend.maturity_config import get_active_tier, set_active_tier, TIER_ORDER
+    body = await request.json()
+    target_tier = body.get("tier")
+    if target_tier not in TIER_ORDER:
+        raise HTTPException(status_code=400, detail=f"Unknown tier: {target_tier}. Must be one of {TIER_ORDER}")
+    current_tier = get_active_tier(x_user_id)
+    current_idx = TIER_ORDER.index(current_tier)
+    target_idx = TIER_ORDER.index(target_tier)
+    if target_idx >= current_idx:
+        raise HTTPException(
+            status_code=400,
+            detail="Jump only allowed to a previous tier. Use /api/maturity/transition to advance.",
+        )
+    set_active_tier(x_user_id, target_tier)
+    return JSONResponse({"ok": True, "active_tier": target_tier})
+
+
+@app.put("/api/maturity/thresholds")
+async def maturity_set_thresholds(request: Request, x_user_id: int = Header(...)):
+    """Override per-user maturity threshold values (body: JSON dict of threshold key→value)."""
+    from backend.maturity_config import set_user_thresholds, DEFAULT_THRESHOLDS
+    body = await request.json()
+    invalid = {k for k in body if k not in DEFAULT_THRESHOLDS}
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown threshold keys: {sorted(invalid)}. Valid keys: {sorted(DEFAULT_THRESHOLDS.keys())}",
+        )
+    set_user_thresholds(x_user_id, body)
+    return JSONResponse({"ok": True, "updated": body})
+
+
+@app.post("/api/maturity/train")
+def maturity_train(x_user_id: int = Header(...)):
+    """Manually trigger ML model training for the requesting user."""
+    from backend.outcome_models import train_outcome_models
+    suite = train_outcome_models(x_user_id)
+    if suite is None:
+        from backend.maturity_config import count_paired_days, get_user_thresholds
+        days = count_paired_days(x_user_id)
+        thr = get_user_thresholds(x_user_id)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient data: {days} paired days, need {thr['ml_model_min_days']}.",
+        )
+    return JSONResponse({
+        "ok": True,
+        "data_days": suite.data_days,
+        "n_models": len(suite.models),
+        "fitted_at": suite.fitted_at,
+    })
+
+
+# ---------------------------------------------------------------------------
+# ML evals endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/evals/models")
+def evals_models(x_user_id: int = Header(...)):
+    """Return per-outcome R², feature importances, and maturity status."""
+    from backend.eval_models_service import get_outcome_model_evals
+    return JSONResponse(get_outcome_model_evals(x_user_id))
+
+
+@app.get("/api/evals/trajectory")
+def evals_trajectory(x_user_id: int = Header(...)):
+    """Return the R² training history for trend charts."""
+    from backend.eval_models_service import get_model_trajectory
+    return JSONResponse(get_model_trajectory(x_user_id))
+
+
+@app.get("/api/evals/inference-comparison")
+def evals_inference_comparison(x_user_id: int = Header(...)):
+    """Compare primary vs alt inference path accuracy over the last 7 days."""
+    from backend.eval_models_service import get_inference_comparison
+    return JSONResponse(get_inference_comparison(x_user_id))
+
+
 @app.post("/api/persist")
 def persist_data():
     """Manually trigger persistence of all models + DB to HF repo."""
@@ -957,30 +1152,102 @@ def persist_data():
     return JSONResponse(result)
 
 
+# --- Custom Goal Endpoints ---
+
+@app.post("/api/user/goal")
+def post_user_goal(body: dict[str, Any], x_user_id: int = Header(...)) -> JSONResponse:
+    """Set a custom free-text goal with optional target date. LLM interprets it into a GoalProfile."""
+    from backend.goal_interpreter import interpret_goal
+    from datetime import date as _date
+
+    goal_text = body.get("goal_text", "").strip()
+    if not goal_text:
+        raise HTTPException(status_code=400, detail="Missing goal_text")
+
+    target_date_str = body.get("target_date")
+    target_date = None
+    if target_date_str:
+        try:
+            target_date = _date.fromisoformat(target_date_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid target_date format. Use YYYY-MM-DD.")
+
+    # Interpret goal via LLM
+    try:
+        goal_profile = interpret_goal(goal_text, target_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Goal interpretation failed: {e}")
+
+    # Cache in DB
+    import json as _json
+    profile_json = _json.dumps(goal_profile.to_dict())
+    set_custom_goal(x_user_id, goal_text, target_date_str, profile_json)
+
+    return JSONResponse({
+        "status": "success",
+        "message": f"Goal set: {goal_text}",
+        "goal_profile": goal_profile.to_dict(),
+    })
+
+
+@app.get("/api/user/goal")
+def get_user_goal(x_user_id: int = Header(...)) -> JSONResponse:
+    """Get the current custom goal for a user, or null if using preset."""
+    custom = get_custom_goal(x_user_id)
+    if not custom:
+        profile = get_user_profile(x_user_id)
+        return JSONResponse({
+            "has_custom_goal": False,
+            "preset_goal": profile.get("goal", "stress_management") if profile else "stress_management",
+        })
+    return JSONResponse({
+        "has_custom_goal": True,
+        **custom,
+    })
+
+
+@app.delete("/api/user/goal")
+def delete_user_goal(x_user_id: int = Header(...)) -> JSONResponse:
+    """Clear custom goal, reverting to preset dropdown."""
+    clear_custom_goal(x_user_id)
+    return JSONResponse({"status": "success", "message": "Custom goal cleared."})
+
+
 @app.get("/api/recommendations")
-def recommendations(x_user_id: int = Header(...), goal: str = "overall_wellness", mode: str = "auto"):
+def recommendations(x_user_id: int = Header(...), goal: str = "stress_management", mode: str = "auto"):
     res = get_coaching_recommendation(x_user_id, goal=goal, force_mode=mode)
     if "error" in res:
         raise HTTPException(status_code=400, detail=res["error"])
     
+    # Extract sport-specific info from goal_profile if present
+    gp = res.get("goal_profile")
+    rec_sport = gp.get("recommended_sport") if gp else None
+    rec_duration = gp.get("recommended_duration_minutes") if gp else None
+    
     # Save for future Evaluation
     try:
+        import json as _json
         from datetime import date
         today = date.today().isoformat()
         deltas = res.get("expected_deltas", {})
+        alt_deltas = res.get("expected_deltas_alt")
         save_recommendation(
             user_id=x_user_id,
             rec_date=today,
             sleep_rec=res["recommendation"]["sleep"],
-            exercise_rec=res["recommendation"]["exercise"],
-            nutrition_rec=res["recommendation"]["nutrition"],
+            activity_rec=res["recommendation"]["activity"],
             expected_hrv=deltas.get("hrv", 0.0),
             expected_rhr=deltas.get("resting_hr", 0.0),
-            expected_sleep=deltas.get("sleep_efficiency", 0.0),
-            expected_stress=deltas.get("cortisol_proxy", 0.0),
-            expected_weight=deltas.get("body_fat_pct", 0.0),
-            expected_energy=deltas.get("energy_level", 0.0),
+            expected_sleep=deltas.get("sleep_score", 0.0),
+            expected_stress=deltas.get("stress_avg", 0.0),
+            expected_battery=deltas.get("body_battery", 0.0),
+            expected_sleep_stage=deltas.get("sleep_stage_quality", 0.0),
+            expected_vo2=deltas.get("vo2_max", 0.0),
             long_term_impact=res.get("long_term_impact"),
+            inference_path=res.get("inference_path"),
+            expected_deltas_alt=_json.dumps(alt_deltas) if alt_deltas else None,
+            recommended_sport=rec_sport,
+            recommended_duration=rec_duration,
         )
     except Exception as e:
         print(f"Error saving recommendation for eval: {e}")
@@ -1004,6 +1271,29 @@ def get_user_evals(x_user_id: int = Header(...)):
                 r[k] = v.isoformat()
     return JSONResponse(evaluated)
 
+@app.post("/api/persona/evals/recalculate")
+def recalculate_evals(x_user_id: int = Header(...)):
+    """Force re-run compliance + fidelity on all existing recommendation records."""
+    from backend.eval_service import force_recalculate_evals
+    n = force_recalculate_evals(x_user_id)
+    return JSONResponse({"ok": True, "records_updated": n})
+
+
+@app.get("/api/persona/evals/backtest")
+def backtest_evals(tier: str, x_user_id: int = Header(...)):
+    """
+    Read-only backtest: compute what fidelity score a given tier would achieve
+    on all historical recommendations without modifying the DB.
+
+    Query param: tier = rules | copula | ml_model | nn
+    """
+    from backend.eval_service import backtest_tier_fidelity
+    result = backtest_tier_fidelity(x_user_id, tier)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return JSONResponse(result)
+
+
 @app.get("/api/dashboard/metrics")
 def get_dashboard_metrics(x_user_id: int = Header(...)):
     """Return dashboard aggregates like 7-Day Compliance Avg."""
@@ -1016,6 +1306,279 @@ def get_dashboard_metrics(x_user_id: int = Header(...)):
     return JSONResponse({
         "avg_compliance_7d": round(avg_compliance * 100, 1)
     })
+
+@app.post("/api/admin/backfill-raw")
+def backfill_raw_payload():
+    """Re-extract sleep stages, bedtime, exercise, vo2_max from raw_payload for all rows that have nulls."""
+    from backend.database import SessionLocal, WearableSync
+    import json as _json, datetime as _dt
+    db = SessionLocal()
+    updated = 0
+    try:
+        rows = db.query(WearableSync).all()
+        for s in rows:
+            if not s.raw_payload:
+                continue
+            try:
+                raw = _json.loads(s.raw_payload) if isinstance(s.raw_payload, str) else s.raw_payload
+            except Exception:
+                continue
+
+            changed = False
+
+            # ── body_battery → recovery_score ──
+            if s.recovery_score is None:
+                bb = raw.get("body_battery")
+                if isinstance(bb, list) and bb:
+                    val = bb[-1].get("charged") if isinstance(bb[-1], dict) else None
+                    if val is not None:
+                        s.recovery_score = val; changed = True
+                elif isinstance(bb, dict):
+                    val = bb.get("latestValue") or bb.get("charged")
+                    if val is not None:
+                        s.recovery_score = val; changed = True
+
+            # ── sleep fields ──
+            sleep = raw.get("sleep") or {}
+            dto = sleep.get("dailySleepDTO") or {}
+
+            if s.sleep_duration_hours is None:
+                dur = (sleep.get("durationInSeconds") or dto.get("sleepDurationInSeconds") or dto.get("sleepTimeSeconds"))
+                if dur:
+                    s.sleep_duration_hours = round(dur / 3600, 1); changed = True
+
+            # Always recalculate bedtime (fix IST double-offset bug)
+            ts = dto.get("sleepStartTimestampLocal")
+            if ts:
+                try:
+                    # sleepStartTimestampLocal = GMT_epoch_ms + IST_offset_ms
+                    # utcfromtimestamp(Local/1000) numerically equals IST wall-clock time
+                    dt_start = _dt.datetime.utcfromtimestamp(int(ts) / 1000)
+                    s.sleep_start_local = dt_start.isoformat()
+                    s.sleep_start_hour = dt_start.hour + dt_start.minute / 60.0
+                    changed = True
+                except Exception:
+                    pass
+
+            if s.sleep_stage_quality is None:
+                deep = dto.get("deepSleepSeconds") or 0
+                rem = dto.get("remSleepSeconds") or 0
+                light = dto.get("lightSleepSeconds") or 0
+                awake = dto.get("awakeSleepSeconds") or 0
+                total = deep + rem + light + awake
+                if total > 0:
+                    s.sleep_deep_pct = round(deep / total * 100, 1)
+                    s.sleep_rem_pct = round(rem / total * 100, 1)
+                    s.sleep_light_pct = round(light / total * 100, 1)
+                    s.sleep_awake_pct = round(awake / total * 100, 1)
+                    s.sleep_stage_quality = round((deep + rem) / total * 100, 1)
+                    changed = True
+
+            if s.sleep_score is None:
+                scores = dto.get("sleepScores") or sleep.get("sleepScores") or {}
+                sv = (scores.get("overall") or {}).get("value") or scores.get("overallScore")
+                if sv is not None:
+                    s.sleep_score = sv; changed = True
+
+            # ── stress ──
+            if s.stress_avg is None:
+                stress = raw.get("stress") or {}
+                sv = stress.get("avgStressLevel") or stress.get("averageStressLevel")
+                if sv is not None:
+                    s.stress_avg = sv; changed = True
+
+            # ── exercise ──
+            if s.exercise_type is None or s.exercise_duration_minutes is None:
+                acts = raw.get("activities") or []
+                if acts and isinstance(acts, list):
+                    primary = max(acts, key=lambda a: a.get("duration") or 0, default=None)
+                    if primary:
+                        if s.exercise_type is None:
+                            s.exercise_type = (primary.get("activityType") or {}).get("typeKey") or "other"
+                        if s.exercise_duration_minutes is None:
+                            s.exercise_duration_minutes = round((primary.get("duration") or 0) / 60)
+                        changed = True
+                elif s.exercise_type is None:
+                    # Mark as "no activity" so it doesn't stay null
+                    s.exercise_type = "none"
+                    s.exercise_duration_minutes = 0
+                    changed = True
+
+            # ── vo2_max ──
+            if s.vo2_max is None:
+                mm = raw.get("max_metrics")
+                if isinstance(mm, list) and mm:
+                    v = mm[0].get("vo2Max") or mm[0].get("vo2max") or (mm[0].get("generic") or {}).get("vo2MaxPreciseValue")
+                    if v is not None:
+                        s.vo2_max = v; changed = True
+                elif isinstance(mm, dict):
+                    v = mm.get("vo2Max") or mm.get("vo2max") or (mm.get("generic") or {}).get("vo2MaxPreciseValue")
+                    if v is not None:
+                        s.vo2_max = v; changed = True
+            if s.vo2_max is None:
+                sm = raw.get("summary") or {}
+                v = sm.get("vo2Max") or sm.get("vo2MaxValue") or sm.get("latestVo2Max")
+                if v is not None:
+                    s.vo2_max = v; changed = True
+            if s.vo2_max is None:
+                ts_d = raw.get("training_status") or {}
+                if isinstance(ts_d, dict):
+                    v = _extract_vo2_from_obj(ts_d)
+                    if v is not None:
+                        s.vo2_max = v; changed = True
+
+            # ── hrv fallback ──
+            if s.hrv_rmssd is None:
+                hrv = raw.get("hrv") or {}
+                v = (hrv.get("hrvSummary") or {}).get("lastNightAvg") or hrv.get("lastNightAvg")
+                if v is not None:
+                    s.hrv_rmssd = v; changed = True
+
+            # ── steps fallback ──
+            if s.steps is None:
+                v = (raw.get("steps") or {}).get("totalSteps")
+                if v is not None:
+                    s.steps = v; changed = True
+
+            if changed:
+                updated += 1
+
+        # ── Forward-fill vo2_max per user (carry last known value forward) ──
+        from backend.database import User as _User
+        user_ids = [u.id for u in db.query(_User).all()]
+        ffill_count = 0
+        for uid in user_ids:
+            user_rows = (
+                db.query(WearableSync)
+                .filter(WearableSync.user_id == uid)
+                .order_by(WearableSync.sync_date.asc())
+                .all()
+            )
+            last_vo2 = None
+            for row in user_rows:
+                if row.vo2_max is not None:
+                    last_vo2 = row.vo2_max
+                elif last_vo2 is not None:
+                    row.vo2_max = last_vo2
+                    ffill_count += 1
+
+        db.commit()
+        return {"updated_rows": updated, "total_rows": len(rows), "vo2_ffilled": ffill_count}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/backfill-activities")
+def backfill_activities():
+    """Re-fetch activities and training_status from Garmin API for all historical dates
+    where exercise_type is null or 'none', and vo2_max is null."""
+    from backend.database import SessionLocal, WearableSync
+    from backend.garmin_service import _get_client
+    import json as _json, datetime as _dt
+
+    db = SessionLocal()
+    updated = 0
+    errors = []
+    debug_info = []
+    try:
+        rows = db.query(WearableSync).filter(
+            WearableSync.source == "garmin"
+        ).order_by(WearableSync.sync_date.asc()).all()
+
+        from collections import defaultdict
+        by_user: dict = defaultdict(list)
+        for s in rows:
+            by_user[s.user_id].append(s)
+
+        for uid, user_rows in by_user.items():
+            try:
+                email, password = get_garmin_creds(uid)
+            except Exception:
+                errors.append(f"user {uid}: no credentials")
+                continue
+            if not email or not password:
+                errors.append(f"user {uid}: empty credentials")
+                continue
+
+            try:
+                client = _get_client(email, password)
+            except Exception as e:
+                errors.append(f"user {uid}: login failed – {e}")
+                continue
+
+            # Fetch ALL activities in one call (sorted date range)
+            dates = sorted([s.sync_date if isinstance(s.sync_date, str) else s.sync_date.isoformat() for s in user_rows])
+            start_date, end_date = dates[0], dates[-1]
+            acts_by_date: dict = defaultdict(list)
+            try:
+                all_acts = client.get_activities_by_date(start_date, end_date)
+                debug_info.append(f"user {uid}: fetched {len(all_acts)} total activities {start_date}→{end_date}")
+                for act in (all_acts or []):
+                    # startTimeLocal is "YYYY-MM-DD HH:MM:SS"
+                    st = act.get("startTimeLocal") or act.get("startTime") or ""
+                    act_date = st[:10] if st else None
+                    if act_date:
+                        acts_by_date[act_date].append(act)
+            except Exception as e:
+                errors.append(f"user {uid}: get_activities_by_date failed – {e}")
+
+            # Fetch training_status for today (most recent VO2 max)
+            today_ts = None
+            try:
+                today_ts = client.get_training_status(_dt.date.today().isoformat())
+                debug_info.append(f"user {uid}: training_status keys={list(today_ts.keys()) if isinstance(today_ts, dict) else type(today_ts).__name__}")
+            except Exception as e:
+                errors.append(f"user {uid}: get_training_status failed – {e}")
+
+            # Extract VO2 from training_status
+            vo2_from_ts = None
+            if today_ts and isinstance(today_ts, dict):
+                vo2_from_ts = _extract_vo2_from_obj(today_ts)
+                debug_info.append(f"user {uid}: vo2_from_ts={vo2_from_ts}")
+
+            for s in user_rows:
+                date_str = s.sync_date if isinstance(s.sync_date, str) else s.sync_date.isoformat()
+                changed = False
+
+                # ── Activities for this date ──
+                day_acts = acts_by_date.get(date_str, [])
+                if day_acts and (s.exercise_type is None or s.exercise_type == "none"):
+                    primary = max(day_acts, key=lambda a: a.get("duration", 0) or 0)
+                    s.exercise_type = (primary.get("activityType") or {}).get("typeKey") or "other"
+                    s.exercise_duration_minutes = round((primary.get("duration") or 0) / 60)
+                    changed = True
+                    if s.raw_payload:
+                        try:
+                            raw = _json.loads(s.raw_payload) if isinstance(s.raw_payload, str) else dict(s.raw_payload)
+                            raw["activities"] = day_acts
+                            s.raw_payload = _json.dumps(raw)
+                        except Exception:
+                            pass
+
+                # ── VO2 max (use training_status value for all rows) ──
+                if s.vo2_max is None and vo2_from_ts is not None:
+                    s.vo2_max = vo2_from_ts
+                    changed = True
+
+                if changed:
+                    updated += 1
+
+        db.commit()
+        return {
+            "updated_rows": updated,
+            "total_rows": sum(len(v) for v in by_user.values()),
+            "errors": errors,
+            "debug": debug_info,
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 
 @app.get("/api/admin/data")
 def admin_data():

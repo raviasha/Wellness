@@ -2,6 +2,8 @@
 
 Reward = sum of goal-weighted biomarker deltas, normalized to [0, 100].
 Each goal defines which outcomes matter most.
+
+MVP 1: 5 Garmin-measured biomarkers × 5 goals.
 """
 
 from __future__ import annotations
@@ -16,43 +18,60 @@ from .models import BiomarkerDeltas, Biomarkers, Goal, RewardBreakdown
 # Goal-specific weights for each biomarker delta.
 #
 # Convention:
-#   - Negative deltas are "good" for resting_hr, body_fat_pct, cortisol_proxy
+#   - Negative deltas are "good" for resting_hr, stress_avg
 #     → we negate them before weighting so positive = better for all.
 #   - All weights for a goal sum to ~1.0.
 # ---------------------------------------------------------------------------
 
 GOAL_WEIGHTS: dict[Goal, dict[str, float]] = {
-    Goal.WEIGHT_LOSS: {
-        "resting_hr": 0.05,
-        "hrv": 0.05,
-        "vo2_max": 0.05,
-        "body_fat_pct": 0.35,
-        "lean_mass_kg": 0.10,
-        "sleep_efficiency": 0.10,
-        "cortisol_proxy": 0.10,
-        "energy_level": 0.20,
-    },
-
-    Goal.OVERALL_WELLNESS: {
-        "resting_hr": 0.125,
-        "hrv": 0.125,
-        "vo2_max": 0.125,
-        "body_fat_pct": 0.125,
-        "lean_mass_kg": 0.125,
-        "sleep_efficiency": 0.125,
-        "cortisol_proxy": 0.125,
-        "energy_level": 0.125,
-    },
-
     Goal.STRESS_MANAGEMENT: {
-        "resting_hr": 0.10,
-        "hrv": 0.20,
+        "resting_hr": 0.08,
+        "hrv": 0.22,
+        "sleep_score": 0.15,
+        "stress_avg": 0.28,
+        "body_battery": 0.12,
+        "sleep_stage_quality": 0.10,
         "vo2_max": 0.05,
-        "body_fat_pct": 0.05,
-        "lean_mass_kg": 0.05,
-        "sleep_efficiency": 0.20,
-        "cortisol_proxy": 0.25,
-        "energy_level": 0.10,
+    },
+
+    Goal.CARDIOVASCULAR_FITNESS: {
+        "resting_hr": 0.26,
+        "hrv": 0.26,
+        "sleep_score": 0.10,
+        "stress_avg": 0.08,
+        "body_battery": 0.10,
+        "sleep_stage_quality": 0.05,
+        "vo2_max": 0.15,
+    },
+
+    Goal.SLEEP_OPTIMIZATION: {
+        "resting_hr": 0.08,
+        "hrv": 0.15,
+        "sleep_score": 0.28,
+        "stress_avg": 0.15,
+        "body_battery": 0.12,
+        "sleep_stage_quality": 0.17,
+        "vo2_max": 0.05,
+    },
+
+    Goal.RECOVERY_ENERGY: {
+        "resting_hr": 0.08,
+        "hrv": 0.18,
+        "sleep_score": 0.12,
+        "stress_avg": 0.22,
+        "body_battery": 0.25,
+        "sleep_stage_quality": 0.12,
+        "vo2_max": 0.03,
+    },
+
+    Goal.ACTIVE_LIVING: {
+        "resting_hr": 0.16,
+        "hrv": 0.16,
+        "sleep_score": 0.16,
+        "stress_avg": 0.16,
+        "body_battery": 0.16,
+        "sleep_stage_quality": 0.10,
+        "vo2_max": 0.10,
     },
 }
 
@@ -62,18 +81,17 @@ GOAL_WEIGHTS: dict[Goal, dict[str, float]] = {
 # ---------------------------------------------------------------------------
 
 DELTA_SCALES: dict[str, float] = {
-    "resting_hr": 1.0,       # −1 bpm/day is excellent
-    "hrv": 5.0,              # +5 ms/day is excellent
-    "vo2_max": 0.3,          # +0.3 ml/kg/min per day is excellent
-    "body_fat_pct": 0.05,    # −0.05% per day is excellent
-    "lean_mass_kg": 0.1,     # +0.1 kg per day is excellent
-    "sleep_efficiency": 2.0,  # +2% per day is excellent
-    "cortisol_proxy": 5.0,   # −5 points per day is excellent
-    "energy_level": 10.0,    # +10 per day is excellent
+    "resting_hr": 1.0,             # −1 bpm/day is excellent
+    "hrv": 5.0,                    # +5 ms/day is excellent
+    "sleep_score": 3.0,            # +3 points/day is excellent
+    "stress_avg": 5.0,             # −5 points/day is excellent
+    "body_battery": 5.0,           # +5 points/day is excellent
+    "sleep_stage_quality": 3.0,    # +3 % deep+REM/day is excellent
+    "vo2_max": 0.3,                # +0.3 ml/kg/min/day is excellent
 }
 
 # Biomarkers where LOWER is better (we negate so positive = good)
-LOWER_IS_BETTER = {"resting_hr", "body_fat_pct", "cortisol_proxy"}
+LOWER_IS_BETTER = {"resting_hr", "stress_avg"}
 
 # ---------------------------------------------------------------------------
 # State quality ranges for normalizing absolute biomarker values.
@@ -82,12 +100,11 @@ LOWER_IS_BETTER = {"resting_hr", "body_fat_pct", "cortisol_proxy"}
 STATE_RANGES: dict[str, tuple[float, float]] = {
     "resting_hr": (40, 120),
     "hrv": (5, 150),
-    "vo2_max": (15, 70),
-    "body_fat_pct": (3, 50),
-    "lean_mass_kg": (30, 100),
-    "sleep_efficiency": (0, 100),
-    "cortisol_proxy": (0, 100),
-    "energy_level": (0, 100),
+    "sleep_score": (0, 100),
+    "stress_avg": (0, 100),
+    "body_battery": (0, 100),
+    "sleep_stage_quality": (0, 100),
+    "vo2_max": (10, 90),
 }
 
 # Blend ratio: how much of the reward comes from deltas vs state quality
@@ -115,8 +132,9 @@ def _compute_state_quality(biomarkers: Biomarkers, weights: dict[str, float]) ->
 
 def compute_reward(
     deltas: BiomarkerDeltas,
-    goal: Goal,
+    goal: Optional[Goal] = None,
     current_biomarkers: Optional[Biomarkers] = None,
+    weights: Optional[dict[str, float]] = None,
 ) -> RewardBreakdown:
     """Compute blended reward from biomarker deltas and absolute state quality.
 
@@ -127,8 +145,20 @@ def compute_reward(
 
     When current_biomarkers is None (e.g. in tests), state quality defaults to
     0.5 so the baseline remains 50.
+
+    Parameters
+    ----------
+    weights : dict, optional
+        When provided, use these raw biomarker weights directly instead of
+        looking up GOAL_WEIGHTS[goal]. This enables custom goal-derived weights.
+    goal : Goal, optional
+        Used to look up weights from GOAL_WEIGHTS when ``weights`` is not given.
+        At least one of ``goal`` or ``weights`` must be provided.
     """
-    weights = GOAL_WEIGHTS[goal]
+    if weights is None:
+        if goal is None:
+            goal = Goal.ACTIVE_LIVING  # safe fallback
+        weights = GOAL_WEIGHTS[goal]
     delta_dict = deltas.model_dump()
 
     per_marker: dict[str, float] = {}
@@ -169,12 +199,11 @@ def compute_reward(
     return RewardBreakdown(
         resting_hr_reward=per_marker["resting_hr"],
         hrv_reward=per_marker["hrv"],
-        vo2_max_reward=per_marker["vo2_max"],
-        body_fat_reward=per_marker["body_fat_pct"],
-        lean_mass_reward=per_marker["lean_mass_kg"],
-        sleep_efficiency_reward=per_marker["sleep_efficiency"],
-        cortisol_reward=per_marker["cortisol_proxy"],
-        energy_reward=per_marker["energy_level"],
+        sleep_score_reward=per_marker["sleep_score"],
+        stress_avg_reward=per_marker["stress_avg"],
+        body_battery_reward=per_marker["body_battery"],
+        sleep_stage_quality_reward=per_marker.get("sleep_stage_quality", 0.0),
+        vo2_max_reward=per_marker.get("vo2_max", 0.0),
         total=round(total, 2),
     )
 

@@ -22,10 +22,10 @@ def _get_client(email: str, password: str) -> Garmin:
 
     Auth priority (least rate-limit risk first):
     1. In-memory session cache — zero API calls
-    2. Persisted garth token files — no password login needed
+    2. Persisted garmin_tokens.json — token restore, no password login needed
     3. Fresh login — only when tokens are missing or truly expired
-       Uses garminconnect 0.3.2 multi-strategy auth (widget+cffi bypasses the
-       per-clientId rate-limit bucket entirely).
+       garminconnect 0.3.2 login(tokenstore) handles both cases and auto-saves
+       tokens after a fresh login so the next call restores without re-authentication.
     """
     if email in _GARMIN_SESSIONS:
         return _GARMIN_SESSIONS[email]
@@ -33,44 +33,46 @@ def _get_client(email: str, password: str) -> Garmin:
     tokenstore = _get_tokenstore(email)
     client = Garmin(email=email, password=password, is_cn=False)
 
-    # Strategy 1: restore persisted tokens (no login request)
-    token_file = os.path.join(tokenstore, "oauth2_token.json")
-    if os.path.exists(token_file):
-        try:
-            client.login(tokenstore)
-            _GARMIN_SESSIONS[email] = client
+    token_file = os.path.join(tokenstore, "garmin_tokens.json")
+    token_exists = os.path.exists(token_file)
+
+    try:
+        # Pass tokenstore so login() tries token restore first, then falls back
+        # to fresh credential login — and auto-saves tokens on fresh login too.
+        client.login(tokenstore if token_exists else None)
+        _GARMIN_SESSIONS[email] = client
+        if token_exists:
             logger.info(f"[Garmin] Restored token session for {email[:6]}…")
-            return client
-        except GarminConnectTooManyRequestsError:
-            raise  # bubble up — don't attempt fresh login on top of a 429
-        except Exception as e:
-            logger.warning(f"[Garmin] Token restore failed ({e}), will re-authenticate")
-            # Remove stale tokens so we don't keep retrying them
+        else:
+            # Persist new tokens for next call
+            try:
+                client.client.dump(tokenstore)
+                logger.info(f"[Garmin] Persisted new tokens for {email[:6]}…")
+            except Exception as dump_err:
+                logger.warning(f"[Garmin] Could not persist tokens: {dump_err}")
+        return client
+    except GarminConnectTooManyRequestsError:
+        raise
+    except Exception as e:
+        if token_exists:
+            logger.warning(f"[Garmin] Token restore failed ({e}), clearing and retrying fresh login")
             try:
                 import shutil
                 shutil.rmtree(tokenstore, ignore_errors=True)
                 os.makedirs(tokenstore, exist_ok=True)
             except Exception:
                 pass
-
-    # Strategy 2: fresh login via garminconnect 0.3.2 multi-strategy cascade
-    # (widget+cffi → portal+cffi → portal+requests → mobile+cffi → mobile+requests)
-    try:
-        client.login()
-    except GarminConnectTooManyRequestsError:
+            # Retry with fresh credentials only
+            client2 = Garmin(email=email, password=password, is_cn=False)
+            client2.login()
+            try:
+                client2.client.dump(tokenstore)
+                logger.info(f"[Garmin] Persisted new tokens for {email[:6]}…")
+            except Exception as dump_err:
+                logger.warning(f"[Garmin] Could not persist tokens: {dump_err}")
+            _GARMIN_SESSIONS[email] = client2
+            return client2
         raise
-    except Exception as e:
-        raise
-
-    # Persist tokens immediately so next restart skips this login
-    try:
-        client.garth.dump(tokenstore)
-        logger.info(f"[Garmin] Persisted new tokens for {email[:6]}…")
-    except Exception as e:
-        logger.warning(f"[Garmin] Could not persist tokens: {e}")
-
-    _GARMIN_SESSIONS[email] = client
-    return client
 
 def fetch_garmin_data(email=None, password=None, target_date: datetime.date = None, simulate=False):
     """
@@ -196,14 +198,162 @@ def fetch_garmin_data(email=None, password=None, target_date: datetime.date = No
             del _GARMIN_SESSIONS[email]
         return {"error": "IP rate limited by Garmin (429)", "source": "garmin"}
 
-    # Extract sleep duration in hours directly so we don't rely on frontend parsing
+    # -------------------------------------------------------------------------
+    # Fetch activities and VO2max (new endpoints)
+    # -------------------------------------------------------------------------
+    activities_data = _safe_fetch(lambda: client.get_activities_fordate(date_str), "activities")
+    max_metrics_data = _safe_fetch(lambda: client.get_max_metrics(date_str), "max_metrics")
+    training_status_data = _safe_fetch(lambda: client.get_training_status(date_str), "training_status")
+
+    # -------------------------------------------------------------------------
+    # Extract sleep fields
+    # -------------------------------------------------------------------------
     sleep_duration_hours = None
+    sleep_start_local = None
+    sleep_end_local = None
+    sleep_start_hour = None
+    sleep_deep_pct = None
+    sleep_rem_pct = None
+    sleep_light_pct = None
+    sleep_awake_pct = None
+    sleep_stage_quality = None
+    sleep_score_val = None
+
     if sleep_data and isinstance(sleep_data, dict):
-        dur_sec = None
         dto = sleep_data.get("dailySleepDTO") or {}
-        dur_sec = sleep_data.get("durationInSeconds") or dto.get("sleepDurationInSeconds") or dto.get("sleepTimeSeconds")
+
+        # Duration
+        dur_sec = (
+            sleep_data.get("durationInSeconds")
+            or dto.get("sleepDurationInSeconds")
+            or dto.get("sleepTimeSeconds")
+        )
         if dur_sec and isinstance(dur_sec, (int, float)) and dur_sec > 0:
             sleep_duration_hours = round(dur_sec / 3600, 1)
+
+        # Bedtime timestamp
+        start_ts = dto.get("sleepStartTimestampLocal")
+        end_ts = dto.get("sleepEndTimestampLocal")
+        if start_ts:
+            try:
+                import datetime as _dt
+                # sleepStartTimestampLocal = GMT_epoch_ms + IST_offset_ms
+                # utcfromtimestamp(Local/1000) numerically equals IST wall-clock time
+                dt_start = _dt.datetime.utcfromtimestamp(int(start_ts) / 1000)
+                sleep_start_local = dt_start.isoformat()
+                sleep_start_hour = dt_start.hour + dt_start.minute / 60.0
+            except Exception:
+                sleep_start_local = str(start_ts)
+        if end_ts:
+            try:
+                import datetime as _dt
+                dt_end = _dt.datetime.utcfromtimestamp(int(end_ts) / 1000)
+                sleep_end_local = dt_end.isoformat()
+            except Exception:
+                sleep_end_local = str(end_ts)
+
+        # Sleep stage seconds
+        deep_sec = dto.get("deepSleepSeconds") or 0
+        rem_sec = dto.get("remSleepSeconds") or 0
+        light_sec = dto.get("lightSleepSeconds") or 0
+        awake_sec = dto.get("awakeSleepSeconds") or 0
+        total_sec = deep_sec + rem_sec + light_sec + awake_sec
+        if total_sec > 0:
+            sleep_deep_pct = round(deep_sec / total_sec * 100, 1)
+            sleep_rem_pct = round(rem_sec / total_sec * 100, 1)
+            sleep_light_pct = round(light_sec / total_sec * 100, 1)
+            sleep_awake_pct = round(awake_sec / total_sec * 100, 1)
+            sleep_stage_quality = round((deep_sec + rem_sec) / total_sec * 100, 1)
+
+        # Sleep score
+        scores = dto.get("sleepScores") or sleep_data.get("sleepScores") or {}
+        sleep_score_val = (
+            (scores.get("overall") or {}).get("value")
+            or scores.get("overall")
+            or (scores.get("personal") or {}).get("overallScore")
+            or scores.get("overallScore")
+        )
+        if isinstance(sleep_score_val, dict):
+            sleep_score_val = sleep_score_val.get("value")
+
+    # -------------------------------------------------------------------------
+    # Extract activity fields
+    # -------------------------------------------------------------------------
+    primary_exercise_type = "none"
+    exercise_duration_minutes = 0
+    exercise_calories = 0
+
+    if activities_data and isinstance(activities_data, list) and len(activities_data) > 0:
+        # Pick the longest activity as the "primary" one for the day
+        primary = max(
+            activities_data,
+            key=lambda a: a.get("duration", 0) or 0,
+            default=None,
+        )
+        if primary:
+            type_key = (primary.get("activityType") or {}).get("typeKey") or "other"
+            exercise_duration_minutes = round((primary.get("duration") or 0) / 60)
+            exercise_calories = primary.get("calories") or 0
+            primary_exercise_type = type_key
+
+    # -------------------------------------------------------------------------
+    # Extract VO2max  (max_metrics endpoint + summary/stats/training_status)
+    # -------------------------------------------------------------------------
+    def _extract_vo2(obj):
+        def _is_plausible_vo2(v):
+            return isinstance(v, (int, float)) and not isinstance(v, bool) and 20 <= float(v) <= 90
+
+        if obj is None or isinstance(obj, bool):
+            return None
+        if isinstance(obj, (int, float)):
+            return float(obj) if _is_plausible_vo2(obj) else None
+        if isinstance(obj, list):
+            for item in obj:
+                v = _extract_vo2(item)
+                if v is not None:
+                    return v
+            return None
+        if not isinstance(obj, dict):
+            return None
+
+        candidates = [
+            obj.get("vo2Max"),
+            obj.get("vo2max"),
+            obj.get("vo2MaxValue"),
+            obj.get("latestEnhancedAverageVO2Max"),
+            obj.get("latestVo2Max"),
+            (obj.get("generic") or {}).get("vo2MaxPreciseValue"),
+            (obj.get("mostRecentVO2Max") or {}).get("value"),
+            (obj.get("mostRecentVO2Max") or {}).get("vo2MaxValue"),
+            (obj.get("mostRecentVO2Max") or {}).get("vo2Max"),
+            (obj.get("mostRecentVO2MaxRunning") or {}).get("vo2MaxValue"),
+            (obj.get("mostRecentVO2MaxCycling") or {}).get("vo2MaxValue"),
+        ]
+        for c in candidates:
+            if _is_plausible_vo2(c):
+                return float(c)
+
+        for k, v in obj.items():
+            if "vo2" in str(k).lower():
+                parsed = _extract_vo2(v)
+                if parsed is not None:
+                    return parsed
+
+        return None
+
+    vo2_max = None
+    if max_metrics_data:
+        vo2_max = _extract_vo2(max_metrics_data)
+
+    # Fallback: summary and stats often carry vo2MaxValue / vo2Max
+    if vo2_max is None and summary:
+        vo2_max = _extract_vo2(summary)
+    if vo2_max is None and stats:
+        vo2_max = _extract_vo2(stats)
+
+    # Fallback: training_status (what Garmin Connect website shows)
+    if vo2_max is None and training_status_data:
+        vo2_max = _extract_vo2(training_status_data)
 
     return {
         "source": "garmin",
@@ -216,9 +366,26 @@ def fetch_garmin_data(email=None, password=None, target_date: datetime.date = No
         "steps": {"totalSteps": total_steps},
         "sleep": sleep_data,
         "sleep_duration_hours": sleep_duration_hours,
+        "sleep_start_local": sleep_start_local,
+        "sleep_end_local": sleep_end_local,
+        "sleep_start_hour": sleep_start_hour,
+        "sleep_deep_pct": sleep_deep_pct,
+        "sleep_rem_pct": sleep_rem_pct,
+        "sleep_light_pct": sleep_light_pct,
+        "sleep_awake_pct": sleep_awake_pct,
+        "sleep_stage_quality": sleep_stage_quality,
+        "sleep_score": sleep_score_val,
         "stress": stress_data,
         "spo2": spo2_data,
-        "respiration": resp_data
+        "respiration": resp_data,
+        "activities": activities_data,
+        "primary_exercise_type": primary_exercise_type,
+        "exercise_duration_minutes": exercise_duration_minutes,
+        "exercise_calories": exercise_calories,
+        "vo2_max": vo2_max,
+        "summary": summary,   # stored for backfill / debugging
+        "max_metrics": max_metrics_data,
+        "training_status": training_status_data,
     }
 
 def get_mock_payload(date_str):
@@ -231,11 +398,41 @@ def get_mock_payload(date_str):
         "intensity_minutes": {"total": 45, "moderate": 20, "vigorous": 25},
         "active_calories": 450,
         "sleep": {
-            "durationInSeconds": 28800, 
-            "dailySleepDTO": {"sleepScores": {"personal": {"overallScore": 85}}}
+            "durationInSeconds": 27000,
+            "dailySleepDTO": {
+                "sleepStartTimestampLocal": 1745366400000,  # ~10:00pm mock epoch ms
+                "sleepEndTimestampLocal":   1745393400000,  # ~5:30am mock
+                "deepSleepSeconds": 5400,
+                "remSleepSeconds": 5400,
+                "lightSleepSeconds": 12600,
+                "awakeSleepSeconds": 3600,
+                "sleepScores": {"overall": {"value": 82}},
+            },
         },
+        "sleep_duration_hours": 7.5,
+        "sleep_start_local": "2026-04-20T22:00:00",
+        "sleep_end_local": "2026-04-21T05:30:00",
+        "sleep_start_hour": 22.0,
+        "sleep_deep_pct": 20.0,
+        "sleep_rem_pct": 20.0,
+        "sleep_light_pct": 46.7,
+        "sleep_awake_pct": 13.3,
+        "sleep_stage_quality": 40.0,
+        "sleep_score": 82,
         "stress": {"averageStressLevel": 32},
         "steps": {"totalSteps": 12500},
         "spo2": {"latestSpO2": 98},
-        "respiration": {"latestRespiration": 14}
+        "respiration": {"latestRespiration": 14},
+        "activities": [
+            {
+                "activityType": {"typeKey": "running"},
+                "duration": 2400.0,
+                "calories": 320,
+                "startTimeLocal": f"{date_str}T07:00:00",
+            }
+        ],
+        "primary_exercise_type": "running",
+        "exercise_duration_minutes": 40,
+        "exercise_calories": 320,
+        "vo2_max": 48.2,
     }

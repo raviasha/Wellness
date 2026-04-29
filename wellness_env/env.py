@@ -10,7 +10,12 @@ from typing import Any
 
 from typing import Literal, Optional
 
-from .graders import grade_multi_outcome, grade_resistant_adaptation, grade_single_goal
+from .graders import (
+    grade_cardiovascular_fitness,
+    grade_sedentary_activation,
+    grade_sleep_optimization,
+    grade_stress_recovery,
+)
 from .models import (
     Action,
     Biomarkers,
@@ -32,20 +37,25 @@ from .simulator import apply_deltas, apply_life_event, compute_biomarker_changes
 # ---------------------------------------------------------------------------
 
 TASK_CONFIGS: dict[str, dict[str, Any]] = {
-    "single_goal": {
-        "persona": "athletic_performance",
+    "cardiovascular_fitness": {
+        "persona": "cardiovascular_fitness",
         "total_days": 14,
-        "description": "Easy: Optimize VO2 max and athletic performance over 14 days",
+        "description": "Easy: Improve cardiovascular markers (RHR, HRV) over 14 days",
     },
-    "multi_outcome": {
+    "stress_recovery": {
         "persona": "stress_management",
         "total_days": 30,
-        "description": "Medium: Balance all biomarkers for stress management over 30 days",
+        "description": "Medium: Balance stress and recovery biomarkers over 30 days",
     },
-    "resistant_adaptation": {
-        "persona": "weight_loss",
+    "sedentary_activation": {
+        "persona": "sedentary",
         "total_days": 30,
-        "description": "Hard: Help a resistant, low-compliance weight-loss persona improve over 30 days",
+        "description": "Hard: Help a low-compliance sedentary persona improve over 30 days",
+    },
+    "sleep_optimization": {
+        "persona": "poor_sleeper",
+        "total_days": 30,
+        "description": "Medium: Improve sleep quality and recovery for a poor sleeper",
     },
     "personal_coaching": {
         "persona": "digital_twin",
@@ -55,10 +65,11 @@ TASK_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 GRADERS = {
-    "single_goal": grade_single_goal,
-    "multi_outcome": grade_multi_outcome,
-    "resistant_adaptation": grade_resistant_adaptation,
-    "personal_coaching": grade_multi_outcome,
+    "cardiovascular_fitness": grade_cardiovascular_fitness,
+    "stress_recovery": grade_stress_recovery,
+    "sedentary_activation": grade_sedentary_activation,
+    "sleep_optimization": grade_sleep_optimization,
+    "personal_coaching": grade_stress_recovery,
 }
 
 
@@ -72,8 +83,9 @@ class WellnessEnv:
     def __init__(
         self,
         seed: int | None = None,
-        simulator_mode: Literal["rules", "distribution"] = "rules",
+        simulator_mode: Literal["rules", "distribution", "ml_model"] = "rules",
         distribution: Optional[Any] = None,
+        ml_suite: Optional[Any] = None,
     ):
         self._seed = seed
         self._rng = random.Random(seed)
@@ -84,19 +96,26 @@ class WellnessEnv:
         self._total_days: int = 0
         self._biomarkers: Biomarkers | None = None
         self._prev_deltas: BiomarkerDeltas = BiomarkerDeltas(
-            resting_hr=0, hrv=0, vo2_max=0, body_fat_pct=0,
-            lean_mass_kg=0, sleep_efficiency=0, cortisol_proxy=0, energy_level=0
+            resting_hr=0, hrv=0, sleep_score=0, stress_avg=0, body_battery=0
         )
         self._history: list[dict[str, Any]] = []
         self._cumulative_reward: float = 0.0
         self._done: bool = False
-        self._simulator_mode: Literal["rules", "distribution"] = simulator_mode
+        self._simulator_mode: Literal["rules", "distribution", "ml_model"] = simulator_mode
         self._distribution: Optional[Any] = distribution  # JointDistribution | None
+        self._ml_suite: Optional[Any] = ml_suite  # OutcomeModelSuite | None
 
     def set_distribution(self, distribution: Any) -> None:
         """Attach a fitted JointDistribution and switch to distribution mode."""
         self._distribution = distribution
         self._simulator_mode = "distribution"
+
+    def set_ml_suite(self, ml_suite: Any, distribution: Any | None = None) -> None:
+        """Attach a trained OutcomeModelSuite and switch to ml_model mode."""
+        self._ml_suite = ml_suite
+        if distribution is not None:
+            self._distribution = distribution
+        self._simulator_mode = "ml_model"
 
     # -------------------------------------------------------------------
     # OpenEnv interface
@@ -143,8 +162,7 @@ class WellnessEnv:
         # Clone starting biomarkers
         self._biomarkers = self._persona.starting_biomarkers.model_copy()
         self._prev_deltas = BiomarkerDeltas(
-            resting_hr=0, hrv=0, vo2_max=0, body_fat_pct=0,
-            lean_mass_kg=0, sleep_efficiency=0, cortisol_proxy=0, energy_level=0
+            resting_hr=0, hrv=0, sleep_score=0, stress_avg=0, body_battery=0
         )
         self._history = []
         self._cumulative_reward = 0.0
@@ -168,7 +186,13 @@ class WellnessEnv:
         actual_action = apply_life_event(actual_action, self._rng)
 
         # 3. Compute biomarker changes
-        if self._simulator_mode == "distribution" and self._distribution is not None:
+        if self._simulator_mode == "ml_model" and self._ml_suite is not None:
+            from .ml_simulator import compute_biomarker_changes_from_ml
+            deltas = compute_biomarker_changes_from_ml(
+                actual_action, self._biomarkers, self._ml_suite,
+                self._distribution, self._history, self._rng, self._persona,
+            )
+        elif self._simulator_mode == "distribution" and self._distribution is not None:
             from .distribution_simulator import compute_biomarker_changes_from_distribution
             deltas = compute_biomarker_changes_from_distribution(
                 actual_action, self._biomarkers, self._persona,
@@ -227,12 +251,11 @@ class WellnessEnv:
         return EnvState(
             day=self._day,
             total_days=self._total_days,
-            goal=self._persona.goal if self._persona else Goal.OVERALL_WELLNESS,
+            goal=self._persona.goal if self._persona else Goal.STRESS_MANAGEMENT,
             persona_name=self._persona.name if self._persona else "",
             compliance_rate=self._persona.compliance_rate if self._persona else 0.0,
             biomarkers=self._biomarkers or Biomarkers(
-                resting_hr=70, hrv=40, vo2_max=30, body_fat_pct=25,
-                lean_mass_kg=55, sleep_efficiency=75, cortisol_proxy=50, energy_level=50
+                resting_hr=70, hrv=40, sleep_score=70, stress_avg=50, body_battery=50
             ),
             history=self._history,
             cumulative_reward=round(self._cumulative_reward, 2),
@@ -258,10 +281,9 @@ class WellnessEnv:
         return Observation(
             day=self._day,
             total_days=self._total_days,
-            goal=self._persona.goal if self._persona else Goal.OVERALL_WELLNESS,
+            goal=self._persona.goal if self._persona else Goal.STRESS_MANAGEMENT,
             biomarkers=self._biomarkers or Biomarkers(
-                resting_hr=70, hrv=40, vo2_max=30, body_fat_pct=25,
-                lean_mass_kg=55, sleep_efficiency=75, cortisol_proxy=50, energy_level=50
+                resting_hr=70, hrv=40, sleep_score=70, stress_avg=50, body_battery=50
             ),
             deltas=self._prev_deltas,
             trends=trends,
@@ -281,10 +303,9 @@ class WellnessEnv:
         return OutcomeTrends(
             resting_hr_trend=_marker_trend("resting_hr"),
             hrv_trend=_marker_trend("hrv"),
-            vo2_max_trend=_marker_trend("vo2_max"),
-            body_fat_trend=_marker_trend("body_fat_pct"),
-            lean_mass_trend=_marker_trend("lean_mass_kg"),
-            sleep_efficiency_trend=_marker_trend("sleep_efficiency"),
+            sleep_score_trend=_marker_trend("sleep_score"),
+            stress_avg_trend=_marker_trend("stress_avg"),
+            body_battery_trend=_marker_trend("body_battery"),
             reward_trend=round(_linear_slope(rewards), 4),
             reward_consistency=round(_stddev(rewards), 4),
         )

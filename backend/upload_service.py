@@ -72,6 +72,15 @@ _ALIASES = {
     "stress_avg": "stress_avg",
     "strain_score": "strain_score",
     "skin_temp_delta": "skin_temp_delta",
+    # Bedtime / sleep timing
+    "sleep_start_hour": "sleep_start_hour",
+    "bedtime_hour": "sleep_start_hour",
+    "sleep_awake_pct": "sleep_awake_pct",
+    "sleep_awake_minutes": "_sleep_awake_min",
+    # Exercise type and duration (v2 action dims)
+    "exercise_type": "exercise_type",
+    "exercise_duration_minutes": "exercise_duration_minutes",
+    "exercise_duration_min": "exercise_duration_minutes",
 
     # --- Garmin Connect CSV export column names (per-report downloads) ---
     # HRV report
@@ -118,10 +127,14 @@ _NUMERIC_COLS = {
     "hrv_rmssd", "resting_hr", "recovery_score", "active_minutes",
     "active_calories", "strain_score", "sleep_score", "stress_avg",
     "steps", "spo2", "respiration_rate", "vo2_max",
-    "sleep_deep_pct", "sleep_rem_pct", "sleep_light_pct",
+    "sleep_deep_pct", "sleep_rem_pct", "sleep_light_pct", "sleep_awake_pct",
     "sleep_duration_hours", "skin_temp_delta", "avg_hr", "hr_max",
     "calories_total", "distance_meters", "floors_climbed",
+    "sleep_start_hour", "exercise_duration_minutes",
 }
+
+# WearableSync columns that accept text / enum values (not numeric)
+_TEXT_COLS = {"exercise_type"}
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +392,7 @@ def _normalize_row(raw: dict) -> "tuple[dict | None, str | None]":
                     mapped["sleep_duration_hours"] = round(float(value) / 3600, 2)
                 except (ValueError, TypeError):
                     pass
-            elif col in ("_sleep_deep_min", "_sleep_rem_min", "_sleep_light_min", "_awake_min"):
+            elif col in ("_sleep_deep_min", "_sleep_rem_min", "_sleep_light_min", "_awake_min", "_sleep_awake_min"):
                 try:
                     mapped[col] = float(value)
                 except (ValueError, TypeError):
@@ -397,6 +410,11 @@ def _normalize_row(raw: dict) -> "tuple[dict | None, str | None]":
             continue
 
         if col not in _NUMERIC_COLS:
+            # Preserve text columns as-is
+            if col in _TEXT_COLS:
+                v = str(value).strip()
+                if v and v.lower() not in ("na", "n/a", "null", "none", ""):
+                    mapped[col] = v
             continue
 
         try:
@@ -426,6 +444,7 @@ def _normalize_row(raw: dict) -> "tuple[dict | None, str | None]":
     deep_min = mapped.pop("_sleep_deep_min", None)
     rem_min = mapped.pop("_sleep_rem_min", None)
     light_min = mapped.pop("_sleep_light_min", None)
+    awake_min = mapped.pop("_sleep_awake_min", None)
     dur_h = mapped.get("sleep_duration_hours")
 
     if dur_h and dur_h > 0:
@@ -436,13 +455,17 @@ def _normalize_row(raw: dict) -> "tuple[dict | None, str | None]":
             mapped["sleep_rem_pct"] = round(rem_min / total_min * 100, 1)
         if light_min is not None:
             mapped["sleep_light_pct"] = round(light_min / total_min * 100, 1)
+        if awake_min is not None:
+            mapped["sleep_awake_pct"] = round(awake_min / total_min * 100, 1)
     elif deep_min is not None and rem_min is not None and light_min is not None:
-        total_min = deep_min + rem_min + light_min
+        total_min = deep_min + rem_min + light_min + (awake_min or 0)
         if total_min > 0:
             mapped["sleep_deep_pct"] = round(deep_min / total_min * 100, 1)
             mapped["sleep_rem_pct"] = round(rem_min / total_min * 100, 1)
             mapped["sleep_light_pct"] = round(light_min / total_min * 100, 1)
-            mapped["sleep_duration_hours"] = round(total_min / 60, 2)
+            if awake_min is not None:
+                mapped["sleep_awake_pct"] = round(awake_min / total_min * 100, 1)
+            mapped["sleep_duration_hours"] = round((total_min - (awake_min or 0)) / 60, 2)
 
     # Garmin: moderate + vigorous intensity minutes → active_minutes
     mod_min = mapped.pop("_mod_min", None)

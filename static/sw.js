@@ -24,8 +24,13 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
 
-  // API calls: network-first (never serve stale data)
+  // API calls: network-only for mutations; network-first with cache fallback for GETs
   if (request.url.includes("/api/")) {
+    if (request.method !== "GET") {
+      // POST/DELETE/PUT — never cache, pass through directly
+      event.respondWith(fetch(request));
+      return;
+    }
     event.respondWith(
       fetch(request)
         .then((res) => {

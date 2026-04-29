@@ -1,0 +1,33 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--tb=short",
+    "-q",
+]
+
+# Coverage settings (only used when pytest-cov is installed)
+[tool.coverage.run]
+source = ["backend", "wellness_env", "rl_training"]
+omit = [
+    "tests/*",
+    "*/__pycache__/*",
+    ".venv*/*",
+]
+branch = true
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
+fail_under = 0
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "coverage_html"

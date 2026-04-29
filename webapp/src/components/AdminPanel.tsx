@@ -27,6 +27,25 @@ export default function AdminPanel() {
   const [rawSyncLoading, setRawSyncLoading] = useState(false);
   const [rawSyncUserId, setRawSyncUserId] = useState<number>(1);
 
+  // Activity backfill state
+  const [backfillActLoading, setBackfillActLoading] = useState(false);
+  const [backfillActResult, setBackfillActResult] = useState<any>(null);
+
+  const runBackfillActivities = async () => {
+    setBackfillActLoading(true);
+    setBackfillActResult(null);
+    try {
+      const res = await fetch("/api/admin/backfill-activities", { method: "POST" });
+      const json = await res.json();
+      setBackfillActResult(json);
+      await fetchAdminData(); // refresh matrix
+    } catch (e: any) {
+      setBackfillActResult({ error: e.message });
+    } finally {
+      setBackfillActLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchAdminData();
     fetchAdminConfig();
@@ -221,6 +240,14 @@ export default function AdminPanel() {
         <button onClick={() => setActiveSection('matrix')} style={tabStyle('matrix')}>📉 Daily Causal Matrix</button>
         <button onClick={() => setActiveSection('calibration')} style={tabStyle('calibration')}>🧬 Calibration & Training</button>
         <button onClick={() => setActiveSection('rawdata')} style={tabStyle('rawdata')}>🔬 Raw Sync Data</button>
+        <button onClick={runBackfillActivities} disabled={backfillActLoading} style={{ ...tabStyle('refresh'), color: backfillActResult?.errors?.length ? "#f97316" : "var(--accent-primary)" }}>
+          {backfillActLoading ? "⏳ Fetching..." : "🏃 Backfill Activities"}
+        </button>
+        {backfillActResult && !backfillActLoading && (
+          <span style={{ fontSize: "0.75rem", color: backfillActResult.error ? "#ef4444" : "var(--text-secondary)", alignSelf: "center" }}>
+            {backfillActResult.error ? `Error: ${backfillActResult.error}` : `✓ ${backfillActResult.updated_rows} updated, ${backfillActResult.vo2_ffilled} VO2 ffilled${backfillActResult.errors?.length ? ` (${backfillActResult.errors.length} err)` : ""}`}
+          </span>
+        )}
         <button onClick={fetchAdminData} style={{ ...tabStyle('refresh'), marginLeft: "auto", color: "var(--text-secondary)" }}>🔄 Refresh</button>
       </div>
 
@@ -271,12 +298,9 @@ export default function AdminPanel() {
                       <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", textTransform: "uppercase", marginBottom: "0.5rem" }}>Input Features (Day T)</div>
                       <ul style={{ fontSize: "0.8rem", color: "var(--text-primary)", paddingLeft: "1.25rem" }}>
                         <li>Sleep Duration (h)</li>
-                        <li>Protein (100g)</li>
-                        <li>Carbohydrates (100g)</li>
-                        <li>Fats (100g)</li>
-                        <li>Nutrition Quality (Auto-Score)</li>
-                        <li>Intensity Minutes (Exercise)</li>
-                        <li>Active Calories (Metabolic)</li>
+                        <li>Steps</li>
+                        <li>Active Minutes</li>
+                        <li>Active Calories</li>
                       </ul>
                     </div>
                     <div>
@@ -285,7 +309,7 @@ export default function AdminPanel() {
                         <li>Δ Sleep Score</li>
                         <li>Δ Heart Rate Variability (HRV)</li>
                         <li>Δ Resting Heart Rate (RHR)</li>
-                        <li>Δ Body Weight</li>
+                        <li>Δ Body Battery</li>
                         <li>Δ Garmin Stress (Physiological)</li>
                       </ul>
                     </div>
@@ -307,7 +331,7 @@ export default function AdminPanel() {
                         </div>
                       </div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.5rem" }}>
-                        {Object.entries(config.goal_weights[data.profiles.find((p:any)=>p.user_id===selectedUserId)?.goal || 'overall_wellness']).slice(0, 6).map(([k, v]: any) => (
+                        {Object.entries(config.goal_weights[data.profiles.find((p:any)=>p.user_id===selectedUserId)?.goal || 'stress_management']).slice(0, 6).map(([k, v]: any) => (
                           <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem", padding: "0.25rem 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
                             <span style={{ color: "var(--text-secondary)" }}>{k.replace('_', ' ')}</span>
                             <span style={{ fontWeight: 700, color: "var(--accent-secondary)" }}>{(v * 100).toFixed(0)}%</span>
@@ -560,19 +584,20 @@ export default function AdminPanel() {
             <thead>
               <tr style={{ background: "rgba(255,255,255,0.02)" }}>
                 <th style={thStyle}>Date</th>
+                {/* ── Behavioral Inputs (X) ── */}
                 <th style={{ ...thStyle, color: "var(--accent-primary)", borderLeft: "2px solid rgba(99,102,241,0.3)" }}>Sleep (h)</th>
-                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Prot (g)</th>
-                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Carb (g)</th>
-                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Fat (g)</th>
-                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Qual</th>
-                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Inten</th>
+                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Bedtime (IST)</th>
+                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Ex. Type</th>
                 <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Act Cal</th>
-                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Diet Cal</th>
-                <th style={{ ...thStyle, color: "var(--success)", borderLeft: "2px solid rgba(34,197,94,0.3)" }}>Score</th>
+                <th style={{ ...thStyle, color: "var(--accent-primary)" }}>Intensity</th>
+                {/* ── Biological Outcomes (Y) ── */}
+                <th style={{ ...thStyle, color: "var(--success)", borderLeft: "2px solid rgba(34,197,94,0.3)" }}>Sleep Score</th>
                 <th style={{ ...thStyle, color: "var(--success)" }}>HRV</th>
                 <th style={{ ...thStyle, color: "var(--success)" }}>RHR</th>
-                <th style={{ ...thStyle, color: "var(--success)" }}>Weight</th>
                 <th style={{ ...thStyle, color: "var(--success)" }}>Stress</th>
+                <th style={{ ...thStyle, color: "var(--success)" }}>Body Battery</th>
+                <th style={{ ...thStyle, color: "#14b8a6" }}>Stage Qual %</th>
+                <th style={{ ...thStyle, color: "#f97316" }}>VO2 Max</th>
               </tr>
             </thead>
             <tbody>
@@ -595,6 +620,16 @@ export default function AdminPanel() {
                 });
 
                 const sortedDates = Array.from(datesSet).sort((a,b) => b.localeCompare(a));
+
+                // Pre-compute forward-filled vo2_max (ascending order)
+                const sortedAsc = [...sortedDates].sort();
+                const vo2Ffill: Record<string, number> = {};
+                let lastVo2: number | null = null;
+                sortedAsc.forEach(d => {
+                  const s = rawSyncs[d] || {};
+                  if (s.vo2_max != null) lastVo2 = s.vo2_max;
+                  if (lastVo2 != null) vo2Ffill[d] = lastVo2;
+                });
                 
                 return sortedDates.map(date => {
                   const dObj = new Date(date);
@@ -607,48 +642,145 @@ export default function AdminPanel() {
 
                   const row: any = { date };
 
+                  // Helper to parse raw_payload safely
+                  const parseRaw = (sync: any) => {
+                    try { return typeof sync.raw_payload === 'string' ? JSON.parse(sync.raw_payload) : (sync.raw_payload || {}); }
+                    catch { return {}; }
+                  };
+
+                  const aggregateActivities = (acts: any[]) => {
+                    if (!Array.isArray(acts) || acts.length === 0) return null;
+
+                    let totalSeconds = 0;
+                    const typeMinutes: Record<string, number> = {};
+
+                    acts.forEach((a: any) => {
+                      const sec = Number(a?.duration || 0);
+                      if (sec > 0) totalSeconds += sec;
+
+                      const typeKey = String(a?.activityType?.typeKey || 'other');
+                      const mins = sec > 0 ? sec / 60 : 0;
+                      typeMinutes[typeKey] = (typeMinutes[typeKey] || 0) + mins;
+                    });
+
+                    const sortedTypes = Object.entries(typeMinutes)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([k]) => k.replace(/_/g, ' '));
+
+                    const typeLabel =
+                      sortedTypes.length <= 2
+                        ? sortedTypes.join(' + ')
+                        : `${sortedTypes.slice(0, 2).join(' + ')} +${sortedTypes.length - 2}`;
+
+                    return {
+                      typeLabel: typeLabel || 'none',
+                      totalMinutes: Math.round(totalSeconds / 60),
+                    };
+                  };
+
                   // === OUTCOMES (Y) from Today ===
                   row.hrv = todaySync.hrv_rmssd;
                   row.rhr = todaySync.resting_hr;
                   row.sleep_score = todaySync.sleep_score;
                   row.stress_avg = todaySync.stress_avg;
-                  const weightLog = todayLogs.find((l: any) => l.log_type === 'weight');
-                  if (weightLog) row.weight = weightLog.value;
+                  row.body_battery = todaySync.recovery_score; // DB column is recovery_score
+                  row.sleep_stage_quality = todaySync.sleep_stage_quality;
+                  row.vo2_max = todaySync.vo2_max ?? vo2Ffill[date] ?? null;
 
                   // === INPUTS (X) from Yesterday (Lagged) ===
                   row.active_calories = prevSync.active_calories;
-                  row.intensity_minutes = prevSync.active_minutes;
-                  
-                  // Sleep duration: use stored column first, fall back to raw payload
+                  row.active_minutes = prevSync.active_minutes;
+                  row.steps = prevSync.steps;
+                  row.bedtime_hour = prevSync.sleep_start_hour;
+                  row.exercise_type = prevSync.exercise_type;
+                  row.exercise_duration = prevSync.exercise_duration_minutes;
+
+                  // Aggregate exercise feature from all sessions for Day T.
+                  const rawPrevForActs = parseRaw(prevSync);
+                  const aggActs = aggregateActivities(rawPrevForActs?.activities || []);
+                  if (aggActs) {
+                    row.exercise_type = aggActs.typeLabel;
+                    row.exercise_duration = aggActs.totalMinutes;
+                  }
+
+                  // ── Sleep duration: stored column → raw payload fallback ──
                   if (todaySync.sleep_duration_hours) {
                     row.sleep_h = todaySync.sleep_duration_hours;
                   } else {
-                    try {
-                      const raw = typeof todaySync.raw_payload === 'string' ? JSON.parse(todaySync.raw_payload) : todaySync.raw_payload;
-                      const sleepObj = raw?.sleep || {};
-                      const dto = sleepObj?.dailySleepDTO || {};
-                      const duration = sleepObj?.durationInSeconds || dto?.sleepDurationInSeconds || dto?.sleepTimeSeconds;
-                      if (duration) {
-                        row.sleep_h = (duration / 3600).toFixed(1);
-                      }
-                    } catch(e) {}
+                    const rawToday = parseRaw(todaySync);
+                    const sleepObj = rawToday?.sleep || {};
+                    const dto = sleepObj?.dailySleepDTO || {};
+                    const dur = sleepObj?.durationInSeconds || dto?.sleepDurationInSeconds || dto?.sleepTimeSeconds;
+                    if (dur) row.sleep_h = (dur / 3600).toFixed(1);
                   }
 
-                  // Macros & Quality from Yesterday's logs
-                  prevLogs.forEach((l: any) => {
-                    if (l.log_type === 'food') {
-                      row.calories = (row.calories || 0) + l.value;
-                      try {
-                        const parsed = typeof l.raw_input === 'string' ? JSON.parse(l.raw_input) : l.raw_input;
-                        if (parsed && parsed.parsed) {
-                          const p = parsed.parsed;
-                          row.protein = (row.protein || 0) + (p.protein_g || 0);
-                          row.carbs = (row.carbs || 0) + (p.carbs_g || 0);
-                          row.fat = (row.fat || 0) + (p.fat_g || 0);
-                          if (p.quality_score) row.quality = p.quality_score;
-                        }
-                      } catch(e) {}
+                  // ── Bedtime: stored column → raw payload fallback ──
+                  // sleepStartTimestampLocal = GMT_ms + IST_offset_ms
+                  // Using getUTCHours() on it gives IST wall-clock hours directly
+                  if (row.bedtime_hour == null) {
+                    const rawPrev = parseRaw(prevSync);
+                    const dto = rawPrev?.sleep?.dailySleepDTO || {};
+                    const ts = dto?.sleepStartTimestampLocal;
+                    if (ts) {
+                      const d = new Date(parseInt(ts));
+                      row.bedtime_hour = d.getUTCHours() + d.getUTCMinutes() / 60;
                     }
+                  }
+
+                  // ── body_battery: raw payload fallback ──
+                  if (row.body_battery == null) {
+                    const rawToday = parseRaw(todaySync);
+                    const bb = rawToday?.body_battery;
+                    if (Array.isArray(bb) && bb.length > 0) {
+                      row.body_battery = bb[bb.length - 1]?.charged ?? bb[0]?.charged;
+                    } else if (bb && typeof bb === 'object') {
+                      row.body_battery = bb.charged ?? bb.latestValue;
+                    }
+                  }
+
+                  // ── sleep_stage_quality: raw payload fallback ──
+                  if (row.sleep_stage_quality == null) {
+                    const rawToday = parseRaw(todaySync);
+                    const dto = rawToday?.sleep?.dailySleepDTO || {};
+                    const deep = dto?.deepSleepSeconds || 0;
+                    const rem = dto?.remSleepSeconds || 0;
+                    const light = dto?.lightSleepSeconds || 0;
+                    const awake = dto?.awakeSleepSeconds || 0;
+                    const total = deep + rem + light + awake;
+                    if (total > 0) row.sleep_stage_quality = ((deep + rem) / total * 100).toFixed(1);
+                  }
+
+                  // ── vo2_max: raw payload fallback ──
+                  if (row.vo2_max == null) {
+                    const rawToday = parseRaw(todaySync);
+                    const mm = rawToday?.max_metrics;
+                    if (Array.isArray(mm) && mm.length > 0) {
+                      row.vo2_max = mm[0]?.vo2Max ?? mm[0]?.vo2max ?? mm[0]?.generic?.vo2MaxPreciseValue;
+                    } else if (mm && typeof mm === 'object') {
+                      row.vo2_max = mm.vo2Max ?? mm.vo2max ?? mm?.generic?.vo2MaxPreciseValue;
+                    }
+                  }
+
+                  // ── exercise fields fallback (only when no aggregated data available) ──
+                  if (!row.exercise_type || row.exercise_duration == null) {
+                    const rawPrev = parseRaw(prevSync);
+                    const acts: any[] = rawPrev?.activities || [];
+                    if (acts.length > 0) {
+                      const agg = aggregateActivities(acts);
+                      if (agg) {
+                        if (!row.exercise_type) row.exercise_type = agg.typeLabel;
+                        if (row.exercise_duration == null) row.exercise_duration = agg.totalMinutes;
+                      }
+                    }
+                  }
+
+                  // ── steps: raw payload fallback ──
+                  if (row.steps == null) {
+                    const rawPrev = parseRaw(prevSync);
+                    row.steps = rawPrev?.steps?.totalSteps ?? null;
+                  }
+
+                  prevLogs.forEach((l: any) => {
                     if (l.log_type === 'proxy_sleep') row.sleep_h = l.value;
                   });
 
@@ -658,19 +790,20 @@ export default function AdminPanel() {
                         <div style={{ color: "var(--success)" }}>{date}</div>
                         <div style={{ fontSize: "0.65rem", color: "var(--accent-primary)", marginTop: "2px" }}>← {prevDate}</div>
                       </td>
+                      {/* ── Inputs (X) ── */}
                       <td style={{ ...tdStyle, borderLeft: "2px solid rgba(99,102,241,0.1)" }}>{row.sleep_h || "—"}</td>
-                      <td style={tdStyle}>{row.protein?.toFixed(0) || "—"}</td>
-                      <td style={tdStyle}>{row.carbs?.toFixed(0) || "—"}</td>
-                      <td style={tdStyle}>{row.fat?.toFixed(0) || "—"}</td>
-                      <td style={tdStyle}>{row.quality || "—"}</td>
-                      <td style={tdStyle}>{row.intensity_minutes || "—"}</td>
+                      <td style={tdStyle}>{row.bedtime_hour != null ? `${Math.floor(row.bedtime_hour)}:${String(Math.round((row.bedtime_hour % 1) * 60)).padStart(2,'0')}` : "—"}</td>
+                      <td style={{ ...tdStyle, textTransform: "capitalize" }}>{(row.exercise_type && row.exercise_type !== 'none') ? row.exercise_type.replace(/_/g, ' ') : "—"}</td>
                       <td style={tdStyle}>{row.active_calories || "—"}</td>
-                      <td style={tdStyle}>{row.calories || "—"}</td>
+                      <td style={tdStyle}>{row.active_minutes ? `${row.active_minutes}m` : "—"}</td>
+                      {/* ── Outcomes (Y) ── */}
                       <td style={{ ...tdStyle, borderLeft: "2px solid rgba(34,197,94,0.1)" }}>{row.sleep_score || "—"}</td>
                       <td style={{ ...tdStyle, color: "var(--success)" }}>{row.hrv || "—"}</td>
                       <td style={tdStyle}>{row.rhr || "—"}</td>
-                      <td style={tdStyle}>{row.weight || "—"}</td>
                       <td style={tdStyle}>{row.stress_avg || "—"}</td>
+                      <td style={tdStyle}>{row.body_battery || "—"}</td>
+                      <td style={{ ...tdStyle, color: "#14b8a6" }}>{row.sleep_stage_quality != null ? `${row.sleep_stage_quality}%` : "—"}</td>
+                      <td style={{ ...tdStyle, color: "#f97316" }}>{row.vo2_max != null ? (typeof row.vo2_max === "number" ? row.vo2_max.toFixed(1) : row.vo2_max) : "—"}</td>
                     </tr>
                   );
                 });

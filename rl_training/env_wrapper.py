@@ -4,16 +4,19 @@ from gymnasium import spaces
 import os
 import json
 from wellness_env import WellnessEnv
-from wellness_env.models import Action, SleepDuration, ExerciseType, NutritionType, Goal
+from wellness_env.models import (
+    Action, SleepDuration, ActivityLevel, BedtimeWindow,
+    ExerciseType, ExerciseDuration, Goal,
+)
 from wellness_env.personas import ResponseModel
 
 class WellnessGymEnv(gym.Env):
-    """Gymnasium wrapper for WellnessEnv allowing integration with tools like Stable Baselines 3."""
-    
+    """Gymnasium wrapper for WellnessEnv — MultiDiscrete([5,5,5,5,5]) action space."""
+
     def __init__(
         self,
         seed: int = 42,
-        task_name: str = "single_goal",
+        task_name: str = "cardiovascular_fitness",
         persona_path: str = None,
         distribution_path: str = None,
     ):
@@ -33,56 +36,61 @@ class WellnessGymEnv(gym.Env):
             simulator_mode="distribution" if distribution is not None else "rules",
             distribution=distribution,
         )
-        
-        # Action space: Sleep(5) x Exercise(6) x Nutrition(5) = 150 unique discrete actions
+
+        # --- Action space: 5 independent dimensions ---
         self.sleep_options = list(SleepDuration)
-        self.exercise_options = list(ExerciseType)
-        self.nutrition_options = list(NutritionType)
-        
-        self.action_space = spaces.Discrete(
-            len(self.sleep_options) * len(self.exercise_options) * len(self.nutrition_options)
-        )
-        
-        # Observation space: 19 continuous features
-        # [day_normalized, compliance_rate, goal_idx, 8x biomarkers, 8x deltas]
+        self.bedtime_options = list(BedtimeWindow)
+        self.activity_options = list(ActivityLevel)
+        self.exercise_type_options = list(ExerciseType)
+        self.exercise_duration_options = list(ExerciseDuration)
+
+        self.action_space = spaces.MultiDiscrete([
+            len(self.sleep_options),             # 5: SleepDuration
+            len(self.bedtime_options),           # 5: BedtimeWindow
+            len(self.activity_options),          # 5: ActivityLevel
+            len(self.exercise_type_options),     # 5: ExerciseType
+            len(self.exercise_duration_options), # 5: ExerciseDuration
+        ])
+
+        # --- Observation space: 17 continuous features ---
+        # [day_normalized, compliance_rate, goal_idx,
+        #  7x biomarkers, 7x deltas]
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(17,), dtype=np.float32
         )
-        
+
     def _get_obs(self, obs):
         goals = list(Goal)
         goal_idx = goals.index(obs.goal)
-        
+
         return np.array([
             obs.day / obs.total_days,
             obs.compliance_rate,
             float(goal_idx),
-            
+
             obs.biomarkers.resting_hr,
             obs.biomarkers.hrv,
+            obs.biomarkers.sleep_score,
+            obs.biomarkers.stress_avg,
+            obs.biomarkers.body_battery,
+            obs.biomarkers.sleep_stage_quality,
             obs.biomarkers.vo2_max,
-            obs.biomarkers.body_fat_pct,
-            obs.biomarkers.lean_mass_kg,
-            obs.biomarkers.sleep_efficiency,
-            obs.biomarkers.cortisol_proxy,
-            obs.biomarkers.energy_level,
-            
+
             obs.deltas.resting_hr,
             obs.deltas.hrv,
+            obs.deltas.sleep_score,
+            obs.deltas.stress_avg,
+            obs.deltas.body_battery,
+            obs.deltas.sleep_stage_quality,
             obs.deltas.vo2_max,
-            obs.deltas.body_fat_pct,
-            obs.deltas.lean_mass_kg,
-            obs.deltas.sleep_efficiency,
-            obs.deltas.cortisol_proxy,
-            obs.deltas.energy_level,
         ], dtype=np.float32)
-        
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
-             self.env = WellnessEnv(seed=seed)
+            self.env = WellnessEnv(seed=seed)
         obs = self.env.reset(self.task_name)
-        
+
         # Apply calibrated persona if provided
         if self.persona_path and os.path.exists(self.persona_path):
             try:
@@ -93,24 +101,27 @@ class WellnessGymEnv(gym.Env):
                         setattr(self.env._persona.response_model, k, v)
             except Exception:
                 pass
-        
+
         return self._get_obs(obs), {}
-        
-    def step(self, action_idx):
-        action_idx = int(action_idx)
-        sl_idx = action_idx % len(self.sleep_options)
-        rem = action_idx // len(self.sleep_options)
-        ex_idx = rem % len(self.exercise_options)
-        nu_idx = rem // len(self.exercise_options)
-        
+
+    def step(self, action_array):
+        # action_array is a length-5 integer array from MultiDiscrete
+        sl_idx  = int(action_array[0])
+        bt_idx  = int(action_array[1])
+        act_idx = int(action_array[2])
+        et_idx  = int(action_array[3])
+        ed_idx  = int(action_array[4])
+
         action = Action(
             sleep=self.sleep_options[sl_idx],
-            exercise=self.exercise_options[ex_idx],
-            nutrition=self.nutrition_options[nu_idx]
+            bedtime=self.bedtime_options[bt_idx],
+            activity=self.activity_options[act_idx],
+            exercise_type=self.exercise_type_options[et_idx],
+            exercise_duration=self.exercise_duration_options[ed_idx],
         )
-        
+
         res = self.env.step(action)
         reward = res.reward.total
         done = res.done
-        
+
         return self._get_obs(res.observation), float(reward), done, False, res.info

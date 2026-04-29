@@ -1,8 +1,8 @@
 """Persona definitions with hidden physiological response models.
 
+MVP 1: Garmin-only, 2D action space (sleep × activity), 5 biomarkers.
 Each persona has a unique response model — the mapping from actions to
-biomarker changes is different per person.  The agent never sees these
-parameters; it only sees the resulting biomarker deltas.
+biomarker changes is different per person.
 """
 
 from __future__ import annotations
@@ -13,10 +13,9 @@ from typing import Any
 
 from .models import (
     Action,
+    ActivityLevel,
     Biomarkers,
-    ExerciseType,
     Goal,
-    NutritionType,
     SleepDuration,
 )
 
@@ -30,46 +29,25 @@ class ResponseModel:
     """
 
     # ----- Sleep response -----
-    # How much HRV improves per hour of sleep above 7h (ms/hour)
     hrv_sleep_sensitivity: float = 3.0
-    # How much resting HR drops per optimal-sleep night (bpm)
     rhr_sleep_benefit: float = -0.3
-    # Sleep efficiency baseline (%) — some people sleep more efficiently
-    sleep_efficiency_base: float = 85.0
-    # How much cortisol drops per optimal-sleep night
     cortisol_sleep_recovery: float = -3.0
 
-    # ----- Exercise response -----
-    # VO2 max improvement per cardio session (ml/kg/min)
-    vo2_cardio_gain: float = 0.15
-    # Lean mass gain per strength session (kg)
-    lean_mass_strength_gain: float = 0.05
-    # Body fat loss per intense exercise session (%)
-    body_fat_exercise_loss: float = -0.03
-    # Resting HR improvement per exercise session (bpm)
+    # ----- Activity response -----
     rhr_exercise_benefit: float = -0.1
-    # Cortisol rise from intense exercise (0-100 scale)
     cortisol_exercise_stress: float = 5.0
-    # Overtraining threshold — consecutive intense days before harm
     overtraining_threshold: int = 3
 
-    # ----- Nutrition response -----
-    # Body fat change per day from nutrition quality (-0.05 to +0.05)
-    body_fat_nutrition_sensitivity: float = 0.02
-    # Lean mass response to protein (kg per high-protein day)
-    lean_mass_protein_gain: float = 0.02
-    # Energy response to nutrition quality (0-100 scale per day)
-    energy_nutrition_sensitivity: float = 8.0
-    # Cortisol response to poor nutrition
-    cortisol_nutrition_stress: float = 3.0
-
     # ----- Cross-action sensitivities -----
-    # How much sleep debt hurts exercise gains (multiplier reduction per debt hour)
     sleep_debt_exercise_penalty: float = 0.1
-    # How much protein intake boosts post-exercise recovery (multiplier)
-    protein_recovery_multiplier: float = 1.3
-    # Overtraining cortisol spike
     overtraining_cortisol_spike: float = 15.0
+
+    # ----- Body battery / energy sensitivity -----
+    energy_sensitivity: float = 8.0
+
+    # ----- Circadian sensitivity (new) -----
+    # Multiplier on how much bedtime alignment affects outcomes (1.0 = average)
+    circadian_sensitivity: float = 1.0
 
 
 @dataclass
@@ -80,8 +58,7 @@ class PersonaConfig:
     compliance_rate: float
     goal: Goal
     sleep_default: SleepDuration
-    exercise_default: ExerciseType
-    nutrition_default: NutritionType
+    activity_default: ActivityLevel
     starting_biomarkers: Biomarkers
     response_model: ResponseModel
     random_defaults: bool = False
@@ -95,66 +72,79 @@ PERSONAS: dict[str, PersonaConfig] = {
     "digital_twin": PersonaConfig(
         name="digital_twin",
         compliance_rate=0.8,
-        goal=Goal.OVERALL_WELLNESS,
+        goal=Goal.ACTIVE_LIVING,
         sleep_default=SleepDuration.SHORT,
-        exercise_default=ExerciseType.NONE,
-        nutrition_default=NutritionType.BALANCED,
+        activity_default=ActivityLevel.REST_DAY,
         starting_biomarkers=Biomarkers(
-            resting_hr=65.0, hrv=50.0, vo2_max=35.0, body_fat_pct=20.0,
-            lean_mass_kg=60.0, sleep_efficiency=80.0, cortisol_proxy=40.0, energy_level=60.0,
+            resting_hr=65.0, hrv=50.0, sleep_score=75.0,
+            stress_avg=40.0, body_battery=60.0,
+            sleep_stage_quality=35.0, vo2_max=40.0,
         ),
         response_model=ResponseModel(),
     ),
-    "athletic_performance": PersonaConfig(
-        name="athletic_performance",
+    "cardiovascular_fitness": PersonaConfig(
+        name="cardiovascular_fitness",
         compliance_rate=0.9,
-        goal=Goal.OVERALL_WELLNESS,
+        goal=Goal.CARDIOVASCULAR_FITNESS,
         sleep_default=SleepDuration.OPTIMAL_HIGH,
-        exercise_default=ExerciseType.HIIT,
-        nutrition_default=NutritionType.HIGH_PROTEIN,
+        activity_default=ActivityLevel.HIGH_INTENSITY,
         starting_biomarkers=Biomarkers(
-            resting_hr=60.0, hrv=60.0, vo2_max=45.0, body_fat_pct=15.0,
-            lean_mass_kg=65.0, sleep_efficiency=85.0, cortisol_proxy=30.0, energy_level=80.0,
+            resting_hr=60.0, hrv=60.0, sleep_score=80.0,
+            stress_avg=30.0, body_battery=75.0,
+            sleep_stage_quality=42.0, vo2_max=50.0,
         ),
-        response_model=ResponseModel(
-            vo2_cardio_gain=0.2, lean_mass_strength_gain=0.08, body_fat_exercise_loss=-0.05
-        ),
+        response_model=ResponseModel(rhr_exercise_benefit=-0.15),
     ),
     "stress_management": PersonaConfig(
         name="stress_management",
         compliance_rate=0.7,
         goal=Goal.STRESS_MANAGEMENT,
         sleep_default=SleepDuration.SHORT,
-        exercise_default=ExerciseType.YOGA,
-        nutrition_default=NutritionType.PROCESSED,
+        activity_default=ActivityLevel.LIGHT_ACTIVITY,
         starting_biomarkers=Biomarkers(
-            resting_hr=75.0, hrv=30.0, vo2_max=32.0, body_fat_pct=25.0,
-            lean_mass_kg=55.0, sleep_efficiency=70.0, cortisol_proxy=70.0, energy_level=40.0,
+            resting_hr=75.0, hrv=30.0, sleep_score=60.0,
+            stress_avg=70.0, body_battery=40.0,
+            sleep_stage_quality=28.0, vo2_max=35.0,
         ),
         response_model=ResponseModel(
-            hrv_sleep_sensitivity=5.0, cortisol_sleep_recovery=-6.0, rhr_sleep_benefit=-0.5
+            hrv_sleep_sensitivity=5.0, cortisol_sleep_recovery=-6.0, rhr_sleep_benefit=-0.5,
+            circadian_sensitivity=1.3,  # more sensitive to circadian disruption
         ),
     ),
-    "weight_loss": PersonaConfig(
-        name="weight_loss",
-        compliance_rate=0.5,
-        goal=Goal.WEIGHT_LOSS,
+    "sedentary": PersonaConfig(
+        name="sedentary",
+        compliance_rate=0.4,
+        goal=Goal.ACTIVE_LIVING,
         sleep_default=SleepDuration.OPTIMAL_LOW,
-        exercise_default=ExerciseType.NONE,
-        nutrition_default=NutritionType.HIGH_CARB,
+        activity_default=ActivityLevel.REST_DAY,
         starting_biomarkers=Biomarkers(
-            resting_hr=72.0, hrv=40.0, vo2_max=30.0, body_fat_pct=30.0,
-            lean_mass_kg=50.0, sleep_efficiency=75.0, cortisol_proxy=50.0, energy_level=50.0,
+            resting_hr=72.0, hrv=40.0, sleep_score=70.0,
+            stress_avg=50.0, body_battery=50.0,
+            sleep_stage_quality=32.0, vo2_max=30.0,
+        ),
+        response_model=ResponseModel(),
+    ),
+    "poor_sleeper": PersonaConfig(
+        name="poor_sleeper",
+        compliance_rate=0.6,
+        goal=Goal.SLEEP_OPTIMIZATION,
+        sleep_default=SleepDuration.VERY_SHORT,
+        activity_default=ActivityLevel.MODERATE_ACTIVITY,
+        starting_biomarkers=Biomarkers(
+            resting_hr=70.0, hrv=35.0, sleep_score=55.0,
+            stress_avg=55.0, body_battery=45.0,
+            sleep_stage_quality=24.0, vo2_max=37.0,
         ),
         response_model=ResponseModel(
-            body_fat_nutrition_sensitivity=0.04, body_fat_exercise_loss=-0.06
+            hrv_sleep_sensitivity=4.0, cortisol_sleep_recovery=-5.0,
+            circadian_sensitivity=1.5,  # very sensitive to late bedtimes
         ),
     ),
 }
 
 
 # ---------------------------------------------------------------------------
-# Compliance model (same as original)
+# Compliance model
 # ---------------------------------------------------------------------------
 
 def apply_compliance(
@@ -171,19 +161,16 @@ def apply_compliance(
         if persona.random_defaults:
             actual = Action(
                 sleep=rng.choice(list(SleepDuration)),
-                exercise=rng.choice(list(ExerciseType)),
-                nutrition=rng.choice(list(NutritionType)),
+                activity=rng.choice(list(ActivityLevel)),
             )
         else:
             actual = Action(
                 sleep=persona.sleep_default,
-                exercise=persona.exercise_default,
-                nutrition=persona.nutrition_default,
+                activity=persona.activity_default,
             )
     else:
         actual = Action(
             sleep=rng.choice(list(SleepDuration)),
-            exercise=rng.choice(list(ExerciseType)),
-            nutrition=rng.choice(list(NutritionType)),
+            activity=rng.choice(list(ActivityLevel)),
         )
     return actual, False

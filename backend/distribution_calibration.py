@@ -1,22 +1,26 @@
 """Joint distribution calibration using a Gaussian copula with Ledoit-Wolf shrinkage.
 
-Replaces the OLS-based calibrate_user_persona() with a richer statistical model that:
-  - Preserves cross-biomarker correlations lost by OLS compression
-  - Captures real noise structure instead of hardcoded Gaussian sigmas
-  - Regularises the covariance estimate for small samples (n=15-30, d=12)
-    using Ledoit-Wolf shrinkage
+MVP 2: Garmin-only inputs and outputs with circadian + exercise-type enrichment.
 
 Architecture: Gaussian copula == multivariate Normal on standardised data.
 At simulation time, P(Y | X) is computed in closed form and sampled.
 
-Unobserved biomarkers (VO2, LeanMass, Energy) have no Garmin ground truth
-and are handled by heuristic rules in wellness_env/distribution_simulator.py.
+X features (6, controllable inputs only):
+  sleep_duration_hours, bedtime_hour_cos, bedtime_hour_sin,
+  exercise_type_idx, active_calories_100s, intensity_minutes_h
+
+Y outcomes (7):
+  delta_sleep_score, delta_hrv_ms, delta_rhr_bpm, delta_stress, delta_body_battery,
+  delta_sleep_stage_quality, delta_vo2_max
+
+Backward compat: loaded distributions with n_x=5 / n_y=5 use the legacy encoding.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,29 +29,40 @@ import numpy as np
 from sklearn.covariance import LedoitWolf
 
 # ---------------------------------------------------------------------------
-# Column layout
+# Column layout (v2 — 7 inputs, 7 outputs)
 # ---------------------------------------------------------------------------
 
 X_FEATURE_NAMES: list[str] = [
-    "sleep_hours",
-    "protein_100g",
-    "carbs_100g",
-    "fat_100g",
-    "quality_0_1",
-    "intensity_mins_h",
-    "active_cals_100s",
+    "sleep_duration_hours",
+    "bedtime_hour_cos",
+    "bedtime_hour_sin",
+    "exercise_type_idx",
+    "active_calories_100s",
+    "intensity_minutes_h",
 ]
 Y_OUTCOME_NAMES: list[str] = [
     "delta_sleep_score",
     "delta_hrv_ms",
     "delta_rhr_bpm",
-    "delta_weight_kg",
     "delta_stress",
+    "delta_body_battery",
+    "delta_sleep_stage_quality",
+    "delta_vo2_max",
+]
+
+# Legacy v1 column lists (for backward compat when loading old distributions)
+X_FEATURE_NAMES_V1: list[str] = [
+    "sleep_duration_hours", "sleep_score_pct", "active_minutes_h",
+    "active_calories_100s", "steps_1000s",
+]
+Y_OUTCOME_NAMES_V1: list[str] = [
+    "delta_sleep_score", "delta_hrv_ms", "delta_rhr_bpm",
+    "delta_stress", "delta_body_battery",
 ]
 
 N_X = len(X_FEATURE_NAMES)   # 7
-N_Y = len(Y_OUTCOME_NAMES)   # 5
-N_JOINT = N_X + N_Y          # 12
+N_Y = len(Y_OUTCOME_NAMES)   # 7
+N_JOINT = N_X + N_Y          # 14
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +76,7 @@ class JointDistribution:
     All list fields are JSON-serialisable so the distribution can be saved
     and loaded without numpy.
     """
-    n_x: int                    # number of input features (7)
+    n_x: int                    # number of input features (5)
     n_y: int                    # number of output dimensions (5)
     means: list[float]          # length n_x + n_y
     stds: list[float]           # length n_x + n_y  (> 0)
@@ -90,12 +105,10 @@ def fit_joint_distribution(X: np.ndarray, Y: np.ndarray) -> JointDistribution:
     JointDistribution
     """
     n = X.shape[0]
-    if X.shape[1] != N_X:
-        raise ValueError(f"Expected {N_X} input features, got {X.shape[1]}")
-    if Y.shape[1] != N_Y:
-        raise ValueError(f"Expected {N_Y} output dimensions, got {Y.shape[1]}")
+    n_x = X.shape[1]
+    n_y = Y.shape[1]
 
-    Z = np.hstack([X, Y])          # (n, N_JOINT)
+    Z = np.hstack([X, Y])          # (n, n_x + n_y)
 
     means = Z.mean(axis=0)
     stds = Z.std(axis=0, ddof=1)
@@ -106,23 +119,26 @@ def fit_joint_distribution(X: np.ndarray, Y: np.ndarray) -> JointDistribution:
     lw = LedoitWolf()
     lw.fit(Z_std)
 
-    # Covariance → correlation (standardised data should already give corr ≈ cov,
-    # but numerical precision can cause slight deviations)
+    # Covariance → correlation
     cov = lw.covariance_
     d = np.sqrt(np.diag(cov))
     d = np.where(d < 1e-8, 1e-8, d)
     corr = (cov / d[:, None]) / d[None, :]
     corr = np.clip(corr, -1.0, 1.0)
 
+    # Select feature/outcome names based on dimensionality
+    feat_names = X_FEATURE_NAMES if n_x == N_X else X_FEATURE_NAMES_V1
+    out_names = Y_OUTCOME_NAMES if n_y == N_Y else Y_OUTCOME_NAMES_V1
+
     return JointDistribution(
-        n_x=N_X,
-        n_y=N_Y,
+        n_x=n_x,
+        n_y=n_y,
         means=means.tolist(),
         stds=stds.tolist(),
         corr_matrix=corr.tolist(),
         n_samples=n,
-        feature_names=list(X_FEATURE_NAMES),
-        outcome_names=list(Y_OUTCOME_NAMES),
+        feature_names=feat_names,
+        outcome_names=out_names,
         condition_number=float(np.linalg.cond(corr)),
         ledoit_wolf_shrinkage=float(lw.shrinkage_),
     )
@@ -189,62 +205,61 @@ def sample_conditional(
 # Feature encoding: Action → calibration feature vector
 # ---------------------------------------------------------------------------
 
-def encode_action_to_features(action: Any) -> np.ndarray:
+def encode_action_to_features(action: Any, dist: "JointDistribution | None" = None) -> np.ndarray:
     """Map a simulator Action to a calibration-compatible feature vector.
 
-    Returns an (N_X,) array with columns:
-      [sleep_hours, protein_100g, carbs_100g, fat_100g,
-       quality_0_1, intensity_mins_h, active_cals_100s]
+    If `dist` has n_x == 5 (legacy), returns the old 5-feature encoding for
+    backward compatibility.  Otherwise returns the full 7-feature v2 vector.
 
-    Values match the encoding used when building calibration data from
-    Garmin syncs, so the distribution can be queried at simulation time.
+    v2 columns (6):
+      sleep_duration_hours, bedtime_hour_cos, bedtime_hour_sin,
+      exercise_type_idx, active_calories_100s, intensity_minutes_h
+
+    v1 columns (5, legacy):
+      sleep_duration_hours, sleep_score_pct, active_minutes_h,
+      active_calories_100s, steps_1000s
     """
     from wellness_env.models import (
-        ExerciseType, NutritionType, SLEEP_HOURS,
+        SLEEP_HOURS, ACTIVITY_INTENSITY, BEDTIME_HOUR,
+        ExerciseType, BedtimeWindow,
     )
 
-    # ---- Sleep ----
     sleep_hours = SLEEP_HOURS.get(action.sleep, 7.5)
+    activity_info = ACTIVITY_INTENSITY.get(action.activity, {"active_minutes": 30, "active_calories": 200})
+    active_mins = activity_info["active_minutes"]
+    active_cals = activity_info["active_calories"]
 
-    # ---- Exercise ----
-    EXERCISE_INTENSITY: dict = {
-        ExerciseType.NONE:            (0.0,   0.0),
-        ExerciseType.LIGHT_CARDIO:    (30.0, 200.0),
-        ExerciseType.MODERATE_CARDIO: (45.0, 350.0),
-        ExerciseType.HIIT:            (30.0, 400.0),
-        ExerciseType.STRENGTH:        (45.0, 300.0),
-        ExerciseType.YOGA:            (45.0, 150.0),
-    }
-    intensity_mins, active_cals = EXERCISE_INTENSITY.get(action.exercise, (0.0, 0.0))
+    # Backward compat: return legacy 5-feature vector
+    if dist is not None and getattr(dist, "n_x", N_X) == 5:
+        sleep_score_pct = min(100.0, max(0.0, 50.0 + (sleep_hours - 5.0) * 10.0))
+        return np.array([
+            sleep_hours,
+            sleep_score_pct / 100.0,
+            active_mins / 60.0,
+            active_cals / 100.0,
+            active_mins * 100 / 1000.0,
+        ], dtype=float)
 
-    # ---- Nutrition ----
-    # Representative macro amounts (grams) per nutrition category
-    NUTRITION_MACROS: dict = {
-        NutritionType.HIGH_PROTEIN: (50.0, 100.0, 30.0),
-        NutritionType.BALANCED:     (30.0, 150.0, 40.0),
-        NutritionType.HIGH_CARB:    (15.0, 200.0, 20.0),
-        NutritionType.PROCESSED:    (10.0, 150.0, 50.0),
-        NutritionType.SKIPPED:      ( 0.0,   0.0,  0.0),
-    }
-    protein_g, carbs_g, fat_g = NUTRITION_MACROS.get(action.nutrition, (30.0, 150.0, 40.0))
+    # v2: 6-feature vector with bedtime circular encoding + exercise type
+    bedtime = getattr(action, "bedtime", BedtimeWindow.OPTIMAL)
+    bedtime_hour = BEDTIME_HOUR.get(bedtime, 22.5)
+    # Circular encoding (handles midnight wrap-around)
+    angle = 2 * math.pi * bedtime_hour / 24.0
+    bedtime_cos = math.cos(angle)
+    bedtime_sin = math.sin(angle)
 
-    NUTRITION_QUALITY: dict = {
-        NutritionType.HIGH_PROTEIN: 0.8,
-        NutritionType.BALANCED:     1.0,
-        NutritionType.HIGH_CARB:    0.4,
-        NutritionType.PROCESSED:    0.1,
-        NutritionType.SKIPPED:      0.0,
-    }
-    quality = NUTRITION_QUALITY.get(action.nutrition, 1.0)
+    exercise_type = getattr(action, "exercise_type", ExerciseType.NONE)
+
+    exercise_type_list = list(ExerciseType)
+    exercise_type_idx = exercise_type_list.index(exercise_type) if exercise_type in exercise_type_list else 0
 
     return np.array([
         sleep_hours,
-        protein_g / 100.0,
-        carbs_g / 100.0,
-        fat_g / 100.0,
-        quality,
-        intensity_mins / 60.0,
+        bedtime_cos,
+        bedtime_sin,
+        float(exercise_type_idx),
         active_cals / 100.0,
+        active_mins / 60.0,
     ], dtype=float)
 
 
@@ -324,80 +339,84 @@ def calibrate_user_distribution(user_id: int) -> dict[str, Any]:
 
         sync_t = sync_map[date_t]
         sync_t1 = sync_map[date_t1]
-        logs_t = log_map.get(date_t, [])
 
-        # ---- Outcomes (Day T → T+1 deltas) ----
+        # ---- Outcomes (Day T → T+1 deltas) — use per-field fallbacks so no pair is dropped ----
         delta_sleep_score = (
-            sync_t1.get("sleep_score", 70) - sync_t.get("sleep_score", 70)
+            (sync_t1.get("sleep_score") or 70) - (sync_t.get("sleep_score") or 70)
         )
-        delta_hrv = sync_t1["hrv_rmssd"] - sync_t["hrv_rmssd"]
-        delta_rhr = sync_t1["resting_hr"] - sync_t["resting_hr"]
+        delta_hrv = (
+            (sync_t1.get("hrv_rmssd") or 0) - (sync_t.get("hrv_rmssd") or 0)
+        )
+        delta_rhr = (
+            (sync_t1.get("resting_hr") or 0) - (sync_t.get("resting_hr") or 0)
+        )
         delta_stress = (
-            sync_t1.get("stress_avg", 50) - sync_t.get("stress_avg", 50)
+            (sync_t1.get("stress_avg") or 50) - (sync_t.get("stress_avg") or 50)
+        )
+        delta_body_battery = (
+            (sync_t1.get("recovery_score") or 50) - (sync_t.get("recovery_score") or 50)
+        )
+        delta_sleep_stage_quality = (
+            (sync_t1.get("sleep_stage_quality") or 35.0)
+            - (sync_t.get("sleep_stage_quality") or 35.0)
+        )
+        delta_vo2_max = (
+            (sync_t1.get("vo2_max") or 0.0) - (sync_t.get("vo2_max") or 0.0)
         )
 
-        # ---- Nutrition features from food logs ----
-        protein_g = carbs_g = fat_g = 0.0
-        q_sum = q_count = 0.0
-        for log in logs_t:
-            if log["log_type"] == "food" and log.get("raw_input"):
-                try:
-                    parsed = json.loads(log["raw_input"])
-                    if isinstance(parsed, dict) and "parsed" in parsed:
-                        p = parsed["parsed"]
-                        protein_g += float(p.get("protein_g", 0))
-                        carbs_g += float(p.get("carbs_g", 0))
-                        fat_g += float(p.get("fat_g", 0))
-                        qmap = {
-                            "high_protein": 0.8, "balanced": 1.0,
-                            "high_carb": 0.4, "processed": 0.1, "skipped": 0.0,
-                        }
-                        q_sum += qmap.get(p.get("nutrition_type", "balanced"), 1.0)
-                        q_count += 1
-                except Exception:
-                    pass
-        quality_score = (q_sum / q_count) if q_count > 0 else 1.0
+        # ---- Input features (controllable only, v2) ----
+        active_mins = sync_t.get("active_minutes", 0)
+        steps = sync_t.get("steps", 0) or 0
 
-        # ---- Exercise features from Garmin ----
-        intensity_mins = sync_t.get("active_minutes", 0)
-        active_cals = sync_t.get("active_calories", 0)
+        # Sleep hours
+        sleep_hours = sync_t.get("sleep_duration_hours") or 0
+        if not sleep_hours:
+            raw: dict = {}
+            try:
+                rp = sync_t.get("raw_payload")
+                raw = json.loads(rp) if isinstance(rp, str) else (rp or {})
+            except Exception:
+                pass
+            sleep_seconds = raw.get("sleep", {}).get("durationInSeconds", 28800)
+            sleep_hours = sleep_seconds / 3600.0
 
-        # ---- Sleep hours from raw payload ----
-        raw: dict = {}
-        try:
-            rp = sync_t.get("raw_payload")
-            raw = json.loads(rp) if isinstance(rp, str) else (rp or {})
-        except Exception:
-            pass
-        sleep_seconds = raw.get("sleep", {}).get("durationInSeconds", 28800)
-        sleep_hours = sleep_seconds / 3600.0
+        # Bedtime circular encoding
+        sleep_start_hour = sync_t.get("sleep_start_hour")
+        if sleep_start_hour is None:
+            sleep_start_hour = 23.0  # fallback: assume midnight-ish
+        angle = 2 * math.pi * sleep_start_hour / 24.0
+        bedtime_cos = math.cos(angle)
+        bedtime_sin = math.sin(angle)
 
-        # ---- Weight delta ----
-        w_t = next(
-            (log["value"] for log in logs_t if log["log_type"] == "weight"), None
-        )
-        w_t1 = next(
-            (log["value"] for log in log_map.get(date_t1, []) if log["log_type"] == "weight"),
-            None,
-        )
-        delta_weight = float(w_t1 - w_t) if (w_t is not None and w_t1 is not None) else 0.0
+        # Exercise type index (0 = rest, 1 = cardio, 2 = strength, 3 = flexibility, 4 = hiit)
+        from wellness_env.models import ExerciseType, GARMIN_ACTIVITY_TYPE_MAP
+        raw_ex_type = sync_t.get("exercise_type") or "none"
+        mapped_ex_type = GARMIN_ACTIVITY_TYPE_MAP.get(raw_ex_type.lower(), ExerciseType.NONE)
+        ex_type_list = list(ExerciseType)
+        exercise_type_idx = float(ex_type_list.index(mapped_ex_type)) if mapped_ex_type in ex_type_list else 0.0
+
+        exercise_duration_minutes = sync_t.get("exercise_duration_minutes") or 0
+        exercise_duration_h = exercise_duration_minutes / 60.0
 
         X_rows.append([
             sleep_hours,
-            protein_g / 100.0,
-            carbs_g / 100.0,
-            fat_g / 100.0,
-            quality_score,
-            intensity_mins / 60.0,
-            active_cals / 100.0,
+            bedtime_cos,
+            bedtime_sin,
+            active_mins / 60.0,
+            exercise_type_idx,
+            exercise_duration_h,
+            steps / 1000.0,
         ])
-        Y_rows.append([delta_sleep_score, delta_hrv, delta_rhr, delta_weight, delta_stress])
+        Y_rows.append([
+            delta_sleep_score, delta_hrv, delta_rhr, delta_stress, delta_body_battery,
+            delta_sleep_stage_quality, delta_vo2_max,
+        ])
 
-    if len(X_rows) < 14:
+    if len(X_rows) < 7:
         return {
             "error": (
                 f"Not enough contiguous days with behavioural logs. "
-                f"Need 14 paired samples (currently have {len(X_rows)})."
+                f"Need 7 paired samples (currently have {len(X_rows)})."
             )
         }
 

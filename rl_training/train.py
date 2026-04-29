@@ -24,9 +24,10 @@ def train(user_id: int = None, persona_path: str = None, distribution_path: str 
     
     # Environment info
     state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n
-    
-    print(f"Stats: State Dim={state_dim}, Action Dim={action_dim}")
+    # MultiDiscrete([5,5,5,5,5]) — action_dim kept for API compat but not used by PPOLite
+    action_dim = int(np.prod(env.action_space.nvec))
+
+    print(f"Stats: State Dim={state_dim}, Action Space={env.action_space}")
     if persona_path:
         print(f"Using calibrated persona: {persona_path}")
     
@@ -79,9 +80,9 @@ def train(user_id: int = None, persona_path: str = None, distribution_path: str 
     if user_id is not None:
         model_dir = os.path.join("models", f"user_{user_id}")
         os.makedirs(model_dir, exist_ok=True)
-        model_path = os.path.join(model_dir, "ppo_wellness_lite.pt")
+        model_path = os.path.join(model_dir, "ppo_wellness_v2.pt")
     else:
-        model_path = "models/ppo_wellness_lite.pt"
+        model_path = "models/ppo_wellness_v2.pt"
     
     ppo_agent.save(model_path)
     print(f"\nModel saved to {model_path}")

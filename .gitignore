@@ -28,3 +28,20 @@ export_cda.xml
 # Deployment copies
 hf_deploy/
 hf_deploy 2/
+
+# Coverage
+coverage_html/
+coverage_trace/
+.coverage
+.coverage.*
+
+# Playwright
+webapp/playwright-report/
+webapp/test-results/
+
+# Build artifacts
+.next/
+.venv/
+.venv 2/
+.venv.nosync/
+wellness_env/
