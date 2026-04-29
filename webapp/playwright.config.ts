@@ -8,7 +8,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: process.env.BASE_URL || 'https://mortality-dimness-footage.ngrok-free.dev/',
+    baseURL: process.env.BASE_URL || 'http://127.0.0.1:8000',
     trace: 'on-first-retry',
   },
   projects: [
@@ -18,7 +18,7 @@ export default defineConfig({
     },
   ],
   webServer: process.env.BASE_URL ? undefined : {
-    command: 'cd .. && .venv.nosync/bin/python -m uvicorn app:app --port 8000',
+    command: 'cd .. && python -m uvicorn app:app --port 8000',
     url: 'http://127.0.0.1:8000/health',
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,
