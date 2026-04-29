@@ -394,7 +394,9 @@ def get_mock_payload(date_str):
         "date": date_str,
         "body_battery": {"charged": 55, "drained": 42, "latestValue": 72},
         "hrv": {"lastNightAvg": 45, "baseline": {"currentValue": 43}},
+        "hrv_rmssd": 45,
         "rhr": {"restingHeartRate": 58},
+        "resting_hr": 58,
         "intensity_minutes": {"total": 45, "moderate": 20, "vigorous": 25},
         "active_calories": 450,
         "sleep": {
