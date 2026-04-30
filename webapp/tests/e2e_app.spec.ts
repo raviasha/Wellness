@@ -2,45 +2,44 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Wellness-Outcome E2E Tests', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the webapp
     await page.goto('/');
+    await page.waitForLoadState('networkidle');
   });
 
   test('frontend loads and displays dashboard', async ({ page }) => {
-    // Check page title
     await expect(page).toHaveTitle(/Wellness/i);
 
-    // Verify dashboard metrics are visible
-    await expect(page.locator('text=RESTING HR')).toBeVisible();
-    await expect(page.locator('text=HRV')).toBeVisible();
-    await expect(page.locator('text=BODY BATTERY')).toBeVisible();
+    // Use more specific locators to avoid strict mode violations
+    await expect(page.locator('div').filter({ hasText: /^Resting HR$/ }).first()).toBeVisible();
+    await expect(page.locator('div').filter({ hasText: /^HRV$/ }).first()).toBeVisible();
+    await expect(page.locator('div').filter({ hasText: /^Body Battery$/ }).first()).toBeVisible();
   });
 
   test('goal setting interaction', async ({ page }) => {
-    // Check for goal input existence
+    await page.locator('#goal-text-input').waitFor({ state: 'visible', timeout: 10000 });
+    
     const goalInput = page.locator('#goal-text-input');
     await expect(goalInput).toBeVisible();
     await expect(goalInput).toHaveAttribute('placeholder', /Change your goal/i);
 
-    // Check for Set Goal button
     const setGoalBtn = page.locator('button:has-text("Set Goal")');
     await expect(setGoalBtn).toBeVisible();
   });
 
   test('navigation to evals tab', async ({ page }) => {
-    // Click on Evals tab
     await page.click('button:has-text("Evals")');
+    await page.waitForLoadState('networkidle');
     
-    // Verify evals content (charts)
-    await expect(page.locator('.recharts-responsive-container')).toHaveCountAtLeast(1);
+    const chartCount = await page.locator('.recharts-responsive-container').count();
+    expect(chartCount).toBeGreaterThanOrEqual(1);
   });
 
   test('navigation to settings', async ({ page }) => {
-    // Click on Settings button
+    await page.locator('button:has-text("Settings")').waitFor({ state: 'visible' });
     await page.click('button:has-text("Settings")');
+    await page.waitForLoadState('networkidle');
     
-    // Verify settings content (e.g., Add New User button)
-    await expect(page.locator('button:has-text("Add New User")')).toBeVisible();
+    await expect(page.locator('button:has-text("Add New User")')).toBeVisible({ timeout: 10000 });
   });
 
   test('backend health check', async ({ page }) => {
