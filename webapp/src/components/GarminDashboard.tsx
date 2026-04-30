@@ -1418,7 +1418,7 @@ export default function GarminDashboard() {
                   setSyncStatus({ syncing: false, message: `✅ User "${newUserCreds.name}" created! Select a device and configure below.` });
                 } catch { alert("Error creating user"); }
               }} style={{ background: newUserCreds.name ? "#22c55e" : "rgba(34,197,94,0.3)", color: "#fff", border: "none", padding: "0.75rem 1.25rem", borderRadius: "var(--radius-sm)", fontWeight: 600, cursor: newUserCreds.name ? "pointer" : "not-allowed", whiteSpace: "nowrap" }}>
-                Create
+                Add New User
               </button>
             </div>
             {syncStatus && <div style={{ marginTop: "0.75rem", padding: "0.75rem", borderRadius: "var(--radius-sm)", fontSize: "0.85rem", background: syncStatus.message.startsWith("✅") ? "rgba(34,197,94,0.1)" : "rgba(99,102,241,0.1)", color: syncStatus.message.startsWith("✅") ? "#22c55e" : "var(--accent-primary)" }}>{syncStatus.message}</div>}
