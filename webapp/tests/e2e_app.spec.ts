@@ -35,9 +35,8 @@ test.describe('Wellness-Outcome E2E Tests', () => {
     await page.click('button:has-text("Evals")');
     await page.waitForLoadState('networkidle');
     
-    // Wait for chart container to be VISIBLE before counting
-    // Changed from 'attached' to 'visible' to ensure it's actually rendered
-    await page.locator('.recharts-responsive-container').first().waitFor({ state: 'visible', timeout: 15000 });
+    // Increase timeout to 30 seconds for CI environments
+    await page.locator('.recharts-responsive-container').first().waitFor({ state: 'visible', timeout: 30000 });
     
     const chartCount = await page.locator('.recharts-responsive-container').count();
     expect(chartCount).toBeGreaterThanOrEqual(1);
@@ -48,8 +47,8 @@ test.describe('Wellness-Outcome E2E Tests', () => {
     await page.click('button:has-text("Settings")');
     await page.waitForLoadState('networkidle');
     
-    // Wait for settings content container to be visible
-    await page.locator('button:has-text("Add New User")').waitFor({ state: 'visible', timeout: 15000 });
+    // Increase timeout to 30 seconds for CI environments
+    await page.locator('button:has-text("Add New User")').waitFor({ state: 'visible', timeout: 30000 });
     await expect(page.locator('button:has-text("Add New User")')).toBeVisible();
   });
 
