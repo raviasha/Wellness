@@ -35,8 +35,9 @@ test.describe('Wellness-Outcome E2E Tests', () => {
     await page.click('button:has-text("Evals")');
     await page.waitForLoadState('networkidle');
     
-    // Wait for chart container to be attached before counting
-    await page.locator('.recharts-responsive-container').first().waitFor({ state: 'attached', timeout: 15000 });
+    // Wait for chart container to be VISIBLE before counting
+    // Changed from 'attached' to 'visible' to ensure it's actually rendered
+    await page.locator('.recharts-responsive-container').first().waitFor({ state: 'visible', timeout: 15000 });
     
     const chartCount = await page.locator('.recharts-responsive-container').count();
     expect(chartCount).toBeGreaterThanOrEqual(1);
