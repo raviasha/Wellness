@@ -43,6 +43,16 @@ jobs:
       working-directory: ./webapp
       run: npm ci
       
+    - name: Build Frontend
+      working-directory: ./webapp
+      run: npm run build
+      
+    - name: Prepare Static Assets for Backend
+      run: |
+        rm -rf static
+        mkdir -p static
+        cp -r webapp/out/* static/
+      
     - name: Install Playwright Browsers
       working-directory: ./webapp
       run: npx playwright install --with-deps chromium
